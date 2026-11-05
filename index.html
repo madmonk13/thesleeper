@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>The Sleeper Stirs</title>
+  <meta name="theme-color" content="#04100f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Sleeper">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="bg"></canvas>
+
+  <div id="app">
+    <header id="hud">
+      <div class="stat">
+        <span class="label">Seal</span>
+        <span id="level" class="value">1</span>
+      </div>
+      <div class="scorebox">
+        <span class="label">Warding</span>
+        <span id="score" class="value">0</span>
+        <div class="bar">
+          <div id="barFill"></div>
+          <span class="mark" style="left:50%"><i id="star1">✦</i></span>
+          <span class="mark" style="left:75%"><i id="star2">✦</i></span>
+          <span class="mark" style="left:100%"><i id="star3">✦</i></span>
+        </div>
+      </div>
+      <div class="stat">
+        <span class="label">Turns</span>
+        <span id="moves" class="value">0</span>
+      </div>
+    </header>
+
+    <div id="goals"></div>
+
+    <!-- the eye opens here, between the HUD and the board -->
+    <div id="eyeSlot"></div>
+
+    <div id="boardWrap"><canvas id="board"></canvas></div>
+
+    <footer>
+      <button id="restartBtn" class="ghost">↻ Begin anew</button>
+      <button id="muteBtn" class="ghost">🔊 Sound</button>
+      <button id="debugBtn" class="ghost hidden">⚙ Debug</button>
+    </footer>
+  </div>
+
+  <canvas id="fg"></canvas>
+
+  <div id="overlay">
+    <div class="card">
+      <h1 id="ovTitle">The Sleeper Stirs</h1>
+      <div id="ovStars" class="stars"></div>
+      <p id="ovText">In sunken R'lyeh the dead god lies dreaming. Arrange the carved stones to restore the seals before he wakes.</p>
+      <button id="ovBtn">Descend</button>
+    </div>
+  </div>
+
+  <!-- shown the first time each relic is formed, and on the first tainted level -->
+  <div id="intro" class="hidden">
+    <div class="card">
+      <canvas id="introIcon"></canvas>
+      <h2 id="introTitle"></h2>
+      <p id="introText"></p>
+      <p id="introTip" class="tip"></p>
+      <button id="introBtn">Understood</button>
+    </div>
+  </div>
+
+  <!-- testing tools: press ` or open with ?debug -->
+  <div id="debug" class="hidden">
+    <div class="card">
+      <h2>Debug</h2>
+      <div id="debugItems"></div>
+      <button id="debugClose" class="ghost">Close</button>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+  </script>
+</body>
+</html>
