@@ -185,13 +185,66 @@ function startDrone() {
     drone = { gain, filter };
   } catch (e) {}
 }
+// ---------- Music ----------
+// Three recorded layers over the drone, in rising urgency. All three loop together on the same
+// 32-second grid so they stay in time; only one is heard at a time, crossfading as turns run out.
+// Mode 0 is the drone alone, mode n adds layer n.
+const MUSIC_SRC = ['audio/sleeper1.m4a', 'audio/sleeper2.m4a', 'audio/sleeper3.m4a'];
+const MUSIC_LOOP = 32;               // seconds; anything longer in a file is a tail, folded onto the start
+const MUSIC_VOL = 0.65;
+const MUSIC_STEPS = [0.25, 0.5, 0.75]; // share of the level's turns spent before each layer takes over
+const MUSIC_NAMES = ['1 · drone', '2 · drone + 1', '3 · drone + 2', '4 · drone + 3'];
+let music = null, musicForce = null;
+function startMusic() {
+  if (music) return;
+  try {
+    const a = audio();
+    music = { layers: [] };
+    const decode = buf => new Promise((res, rej) => a.decodeAudioData(buf, res, rej));
+    Promise.all(MUSIC_SRC.map(src => fetch(src).then(r => r.arrayBuffer()).then(decode))).then(bufs => {
+      const t0 = a.currentTime + 0.1;
+      music.layers = bufs.map(raw => {
+        const buf = foldLoop(a, raw), src = a.createBufferSource(), g = a.createGain();
+        src.buffer = buf; src.loop = true;
+        g.gain.value = 0;
+        // straight out rather than through the limiter, so effects don't make the music pump
+        src.connect(g).connect(a.destination);
+        src.start(t0);
+        return g;
+      });
+      droneTick = 0;
+    }).catch(() => {});
+  } catch (e) {}
+}
+// Trims a recording to exactly one loop, mixing anything past the end (a reverb tail) back
+// onto the start so it rings out under the next pass instead of being cut off.
+function foldLoop(a, raw) {
+  const len = Math.min(raw.length, Math.round(MUSIC_LOOP * raw.sampleRate));
+  const buf = a.createBuffer(raw.numberOfChannels, len, raw.sampleRate);
+  for (let ch = 0; ch < raw.numberOfChannels; ch++) {
+    const from = raw.getChannelData(ch), to = buf.getChannelData(ch);
+    to.set(from.subarray(0, len));
+    for (let i = len; i < from.length; i++) to[i % len] += from[i];
+  }
+  return buf;
+}
+function musicMode() {
+  if (musicForce != null) return musicForce;
+  if (state !== 'playing') return 0;
+  return MUSIC_STEPS.filter(x => dread.target >= x).length; // dread.target: share of turns spent
+}
+
 let droneTick = 0;
 function updateDrone(now) {
   if (!drone || now - droneTick < 250) return;
   droneTick = now;
   const t = actx.currentTime, d = dread.shown;
-  drone.gain.gain.setTargetAtTime(muted ? 0 : 0.025 + 0.07 * d, t, 0.6);
+  drone.gain.gain.setTargetAtTime(muted ? 0 : 0.018 + 0.05 * d, t, 0.6);
   drone.filter.frequency.setTargetAtTime(140 + 600 * d * d, t, 0.6);
+  if (music && music.layers.length) {
+    const m = muted ? 0 : musicMode();
+    music.layers.forEach((g, i) => g.gain.setTargetAtTime(m === i + 1 ? MUSIC_VOL : 0, t, 1.2));
+  }
 }
 const SCALE = [0, 3, 5, 7, 10, 12, 15, 17];
 function matchSound(cascade) {
@@ -1127,6 +1180,7 @@ function drawIntroIcon(now) {
 // ---------- Level flow ----------
 async function startLevel(n) {
   startDrone();
+  startMusic();
   level = n;
   cfg = levelConfig(n);
   score = 0;
@@ -1256,6 +1310,13 @@ const DEBUG_ITEMS = [
       seenIntros.clear(); try { localStorage.removeItem('sleeper.seen'); } catch (e) {}
       btn.textContent = 'Alerts reset ✓';
     } },
+  // overrides which music mode plays, cycling auto → 1 → 2 → 3 → 4 → auto
+  { label: () => `Music: ${musicForce == null ? 'auto' : MUSIC_NAMES[musicForce]}`,
+    run(v, btn) {
+      musicForce = musicForce == null ? 0 : musicForce < MUSIC_NAMES.length - 1 ? musicForce + 1 : null;
+      startDrone(); startMusic(); droneTick = 0;
+      btn.textContent = this.label();
+    } },
 ];
 const debugEl = $('debug');
 function buildDebug() {
@@ -1274,7 +1335,7 @@ function buildDebug() {
     }
     const btn = document.createElement('button');
     btn.className = 'ghost';
-    btn.textContent = it.label;
+    btn.textContent = typeof it.label === 'function' ? it.label() : it.label;
     btn.disabled = it.when ? !it.when() : false;
     btn.addEventListener('click', () => it.run(input && input.value, btn));
     row.appendChild(btn);
