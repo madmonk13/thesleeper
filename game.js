@@ -17,16 +17,20 @@ const GLYPH_OFFSET = { triangle: .16, star: .06 };
 const GLOW = { ley: '#3dffb0', elder: '#ffb84d', wisp: '#aaffd8', taint: '#b44dff', void: '#ff2a2a' };
 const POINTS_PER_PIECE = 40;
 const CLEANSE_BONUS = 100;
-const DART_FLIGHT = 320;
+const SHOG_BONUS = 100;
+const WITCH_STRIKE = 110; // ms from a witch-light firing to its bolt landing
 const TAINT_PATIENCE = 2;
 const STAR_THRESHOLDS = [1, 1.5, 2];
 const DIRS = [[0, 1], [1, 0], [0, -1], [-1, 0]];
 
 function levelConfig(n) {
   const goals = [{ type: 'score', target: 1500 + n * 1000 }];
-  let taint = 0;
+  let taint = 0, shoggoth = 0;
   if (n % 3 === 0) {
     taint = Math.min(18, 4 + n);
+  } else if (n >= 5 && n % 3 === 2) {
+    // every third level from 5 (5, 8, 11…) a shoggoth engulfs part of the board
+    shoggoth = Math.min(24, 6 + n);
   } else if (n >= 2) {
     const count = Math.min(25, 8 + Math.floor(n * 1.5));
     const first = (n * 2) % NC;
@@ -35,7 +39,8 @@ function levelConfig(n) {
     if (n >= 7) taint = 4;
   }
   if (taint) goals.push({ type: 'cleanse' });
-  return { moves: Math.max(16, 22 - Math.floor(n / 2)), goals, taint };
+  if (shoggoth) goals.push({ type: 'free' });
+  return { moves: Math.max(16, 22 - Math.floor(n / 2)), goals, taint, shoggoth };
 }
 
 // ---------- DOM ----------
@@ -46,7 +51,7 @@ const fg = $('fg'), fctx = fg.getContext('2d'); // eye layer, drawn over the boa
 const overlay = $('overlay');
 
 // ---------- State ----------
-let grid = [], taint = [], taintFill = [], level = 1, score = 0, movesLeft = 0, cfg = null, collected = [];
+let grid = [], taint = [], taintFill = [], shog = [], shogFill = [], level = 1, score = 0, movesLeft = 0, cfg = null, collected = [];
 let state = 'menu', busy = false, selected = null, drag = null, hint = null;
 let lastInput = 0, muted = false, cleansedThisMove = 0, idleTurns = 0;
 let particles = [], fx = [], floats = [], banner = null, shake = null;
@@ -194,14 +199,16 @@ function matchSound(cascade) {
 
 // ---------- Board logic ----------
 function findRuns() {
+  // stones engulfed by a shoggoth never match
+  const at = (r, c) => shogAt(r, c) ? null : grid[r][c];
   const runs = [];
   for (let r = 0; r < ROWS; r++) {
     let c = 0;
     while (c < COLS) {
-      const p = grid[r][c];
+      const p = at(r, c);
       if (!p || p.color < 0) { c++; continue; }
       let e = c + 1;
-      while (e < COLS && grid[r][e] && grid[r][e].color === p.color) e++;
+      while (e < COLS && at(r, e) && at(r, e).color === p.color) e++;
       if (e - c >= 3) {
         const cells = [];
         for (let k = c; k < e; k++) cells.push([r, k]);
@@ -213,10 +220,10 @@ function findRuns() {
   for (let c = 0; c < COLS; c++) {
     let r = 0;
     while (r < ROWS) {
-      const p = grid[r][c];
+      const p = at(r, c);
       if (!p || p.color < 0) { r++; continue; }
       let e = r + 1;
-      while (e < ROWS && grid[e][c] && grid[e][c].color === p.color) e++;
+      while (e < ROWS && at(e, c) && at(e, c).color === p.color) e++;
       if (e - r >= 3) {
         const cells = [];
         for (let k = r; k < e; k++) cells.push([k, c]);
@@ -227,9 +234,9 @@ function findRuns() {
   }
   for (let r = 0; r < ROWS - 1; r++) {
     for (let c = 0; c < COLS - 1; c++) {
-      const p = grid[r][c];
+      const p = at(r, c);
       if (!p || p.color < 0) continue;
-      const same = (rr, cc) => grid[rr][cc] && grid[rr][cc].color === p.color;
+      const same = (rr, cc) => at(rr, cc) && at(rr, cc).color === p.color;
       if (same(r, c + 1) && same(r + 1, c) && same(r + 1, c + 1)) {
         runs.push({ dir: 'sq', cells: [[r, c], [r, c + 1], [r + 1, c], [r + 1, c + 1]], color: p.color });
       }
@@ -319,6 +326,48 @@ function seedTaint(n) {
   cells.forEach(([r, c]) => { taintFill[r][c] = -.3 - Math.random() * .8; });
 }
 
+// ---------- Shoggoth ----------
+// A shoggoth engulfs stones: they can't be swapped or matched, and stones fall past
+// behind it. Clearing any stone beside it (or hitting it with a relic) drives it off that cell.
+const shogAt = (r, c) => !!(shog[r] && shog[r][c]);
+const shogCount = () => shog.reduce((s, row) => s + row.filter(Boolean).length, 0);
+
+function seedShoggoth(n) {
+  shog = Array.from({ length: ROWS }, () => new Array(COLS).fill(false));
+  shogFill = Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
+  if (!n) return;
+  const cells = [];
+  const add = (r, c) => {
+    if (inBounds(r, c) && !shog[r][c] && !(taint[r] && taint[r][c])) { shog[r][c] = true; cells.push([r, c]); }
+  };
+  // one or two masses, grown outward so it reads as a single creature
+  for (let i = 0; i < (n > 12 ? 2 : 1); i++) add(2 + randInt(ROWS - 4), 1 + randInt(COLS - 2));
+  for (let guard = 0; cells.length < n && guard < 2000; guard++) {
+    const [r, c] = cells[randInt(cells.length)], [dr, dc] = DIRS[randInt(4)];
+    add(r + dr, c + dc);
+  }
+  cells.forEach(([r, c]) => { shogFill[r][c] = -.3 - Math.random() * .8; });
+}
+
+let freedThisMove = 0;
+function freeShoggoth(r, c) {
+  if (!shog[r][c]) return;
+  shog[r][c] = false;
+  freedThisMove++;
+  score += SHOG_BONUS;
+  for (let i = 0; i < 10; i++) {
+    const a = Math.random() * TAU, sp = .06 + Math.random() * .12;
+    particles.push({
+      x: c + .5, y: r + .5, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - .06,
+      life: 0, max: 600, color: i % 3 ? '#3b3d40' : '#6d7a6a', size: .04 + Math.random() * .05, rot: 0, spin: 0, drop: true,
+    });
+  }
+  // a wet recoil
+  noise(.22, 320, .12, 2.2, 0, 'lowpass');
+  sweep(240, 90, .22, .05, 0);
+  updateHUD();
+}
+
 // A tendril reaches from an existing blob into a neighbouring cell, then a new blob
 // swells there with a wet splat.
 const TENDRIL_REACH = 520;
@@ -328,7 +377,7 @@ async function spreadTaint() {
     for (let c = 0; c < COLS; c++)
       if (taint[r][c])
         for (const [dr, dc] of DIRS)
-          if (inBounds(r + dr, c + dc) && !taint[r + dr][c + dc]) options.push([r, c, r + dr, c + dc]);
+          if (inBounds(r + dr, c + dc) && !taint[r + dr][c + dc] && !shogAt(r + dr, c + dc)) options.push([r, c, r + dr, c + dc]);
   if (!options.length) return;
   const [r0, c0, r, c] = options[randInt(options.length)];
   addFx({ type: 'tendril', r0, c0, r1: r, c1: c, dur: TENDRIL_REACH + 250 });
@@ -354,21 +403,47 @@ async function spreadTaint() {
 }
 
 // ---------- Effects of special pieces ----------
-// Witch-lights seek taint first, then stones still needed for a goal, then anything.
-function pickDartTarget(taken) {
+// Witch-lights seek taint first, then a shoggoth, then stones still needed for a goal, then anything.
+// `prefer` keeps the choice stable between the preview and the real strike while it's still valid.
+function pickDartTarget(taken, prefer) {
   const want = new Set(cfg.goals
     .filter(g => g.type === 'collect' && collected[g.color] < g.count)
     .map(g => g.color));
-  const pool = [], goalPool = [], taintPool = [];
+  const pool = [], goalPool = [], taintPool = [], shogPool = [];
   forEachPiece((q, r, c) => {
     const k = key(r, c);
     if (taken.has(k)) return;
     pool.push(k);
     if (taint[r][c]) taintPool.push(k);
-    if (want.has(q.color)) goalPool.push(k);
+    if (shogAt(r, c)) shogPool.push(k);
+    else if (want.has(q.color)) goalPool.push(k);
   });
-  const from = taintPool.length ? taintPool : goalPool.length ? goalPool : pool;
+  const from = taintPool.length ? taintPool : shogPool.length ? shogPool : goalPool.length ? goalPool : pool;
+  if (prefer != null && from.includes(prefer)) return prefer;
   return from.length ? from[randInt(from.length)] : null;
+}
+
+// The cells a witch-light at (r, c) would strike right now; remembered on the piece.
+function dartAims(p, r, c, n = p.count || 1) {
+  const taken = new Set([key(r, c)]), out = [], prev = p.aims || [];
+  for (let i = 0; i < n; i++) {
+    const t = pickDartTarget(taken, prev[i]);
+    if (t == null) break;
+    taken.add(t); out.push(t);
+  }
+  p.aims = out;
+  return out;
+}
+
+// A bolt from the sky onto one cell, after `delay` ms.
+function witchBolt(r, c, delay) {
+  wait(delay).then(() => {
+    const rect = canvas.getBoundingClientRect();
+    const tx = rect.left + PAD + (c + .5) * cell, ty = rect.top + PAD + (r + .5) * cell;
+    const main = boltPath(tx + (Math.random() - .5) * cell * 3, rect.top - cell * 2, tx, ty, cell * .35, 10);
+    const [bx, by] = main[4];
+    bolts.push({ main, branches: [boltPath(bx, by, bx + (Math.random() - .5) * cell * 2, by + cell, cell * .2, 4)], t: 0, dur: 360, width: .9 });
+  });
 }
 
 function effectCells(r, c, p, cleared, queued, hitDelay) {
@@ -376,17 +451,22 @@ function effectCells(r, c, p, cleared, queued, hitDelay) {
   if (p.special === 'dart') {
     const taken = new Set([...cleared, ...queued, key(r, c)]);
     for (let i = 0; i < (p.count || 1); i++) {
-      const t = pickDartTarget(taken);
+      const t = pickDartTarget(taken, p.aims && p.aims[i]);
       if (t == null) break;
       taken.add(t);
       out.push(t);
       const tr = Math.floor(t / COLS), tc = t % COLS, target = grid[tr][tc];
-      if (p.carry && target.special !== 'rainbow') target.special = p.carry;
-      hitDelay.set(t, fxDelay + DART_FLIGHT);
-      addFx({ type: 'dart', r0: r, c0: c, r1: tr, c1: tc, carry: p.carry, dur: DART_FLIGHT });
+      if (p.carry && target.special !== 'rainbow' && !shogAt(tr, tc)) target.special = p.carry;
+      hitDelay.set(t, fxDelay + WITCH_STRIKE + i * 70);
+      witchBolt(tr, tc, fxDelay + i * 70);
     }
-    beep(1400, 0.3, 'sine', 0.04);
-    beep(1870, 0.25, 'sine', 0.03, 0.05);
+    // a lighter flash and roll than a chain reaction's storm
+    wait(fxDelay).then(() => {
+      flash = { t: 0, dur: 300, strength: .35 };
+      startShake(180, 3);
+      thunder(.3);
+      beep(1400, 0.2, 'sine', 0.03);
+    });
   } else if (p.special === 'h') {
     for (let cc = 0; cc < COLS; cc++) out.push(key(r, cc));
     addFx({ type: 'beam', dir: 'h', r, c, dur: 420 });
@@ -423,12 +503,14 @@ function effectCells(r, c, p, cleared, queued, hitDelay) {
 
 async function clearCells(keys, cascade = 1, creates = []) {
   // hitDelay: ms before a cell clears, so pieces hit by a witch-light wait for it to land.
-  const queue = [...keys], cleared = new Set(), hitDelay = new Map();
+  // freed: shoggoth cells driven off (key -> delay). The stone beneath stays.
+  const queue = [...keys], cleared = new Set(), hitDelay = new Map(), freed = new Map();
   while (queue.length) {
     const k = queue.shift();
     if (cleared.has(k)) continue;
     const r = Math.floor(k / COLS), c = k % COLS, p = grid[r][c];
     if (!p) continue;
+    if (shogAt(r, c)) { if (!freed.has(k)) freed.set(k, hitDelay.get(k) || 0); continue; }
     cleared.add(k);
     if (p.special) {
       fxDelay = hitDelay.get(k) || 0;
@@ -440,7 +522,16 @@ async function clearCells(keys, cascade = 1, creates = []) {
       fxDelay = 0;
     }
   }
-  if (!cleared.size) return;
+  // a shoggoth recoils from any stone cleared beside it
+  for (const k of cleared) {
+    const r = Math.floor(k / COLS), c = k % COLS, d = hitDelay.get(k) || 0;
+    for (const [dr, dc] of DIRS) {
+      if (!shogAt(r + dr, c + dc)) continue;
+      const k2 = key(r + dr, c + dc);
+      if (!freed.has(k2) || freed.get(k2) > d) freed.set(k2, d);
+    }
+  }
+  if (!cleared.size && !freed.size) return;
 
   const pts = cleared.size * POINTS_PER_PIECE * cascade;
   score += pts;
@@ -471,8 +562,14 @@ async function clearCells(keys, cascade = 1, creates = []) {
     const d = hitDelay.get(k) || 0;
     anims.push(d ? wait(d).then(pop) : pop());
   }
-  addFloat('+' + pts, sx / cleared.size, sy / cleared.size);
-  matchSound(cascade);
+  for (const [k, d] of freed) {
+    const free = () => freeShoggoth(Math.floor(k / COLS), k % COLS);
+    if (d) anims.push(wait(d).then(free)); else free();
+  }
+  if (cleared.size) {
+    addFloat('+' + pts, sx / cleared.size, sy / cleared.size);
+    matchSound(cascade);
+  }
   updateHUD();
   await Promise.all(anims);
   for (const k of cleared) grid[Math.floor(k / COLS)][k % COLS] = null;
@@ -493,15 +590,18 @@ async function clearCells(keys, cascade = 1, creates = []) {
 async function applyGravity() {
   const anims = [];
   for (let c = 0; c < COLS; c++) {
-    let write = ROWS - 1;
-    for (let r = ROWS - 1; r >= 0; r--) {
-      if (grid[r][c]) {
-        if (r !== write) { grid[write][c] = grid[r][c]; grid[r][c] = null; }
-        write--;
-      }
+    // engulfed stones hold their place; the rest fall past behind the shoggoth
+    const free = [];
+    for (let r = ROWS - 1; r >= 0; r--) if (!shogAt(r, c)) free.push(r);
+    let w = 0;
+    for (const r of free) {
+      if (!grid[r][c]) continue;
+      const p = grid[r][c];
+      grid[r][c] = null;
+      grid[free[w++]][c] = p;
     }
     let spawn = 0;
-    for (let r = write; r >= 0; r--) grid[r][c] = makePiece(randColor(), null, c, -1 - spawn++);
+    for (; w < free.length; w++) grid[free[w]][c] = makePiece(randColor(), null, c, -1 - spawn++);
     for (let r = 0; r < ROWS; r++) {
       const p = grid[r][c], dist = r - p.y;
       if (dist > 0) anims.push(tween(p, { y: r }, 140 + Math.sqrt(dist) * 90, ease.inQuad));
@@ -544,7 +644,7 @@ function findMove() {
         const r2 = r + dr, c2 = c + dc;
         if (!inBounds(r2, c2)) continue;
         const a = grid[r][c], b = grid[r2][c2];
-        if (!a || !b) continue;
+        if (!a || !b || shogAt(r, c) || shogAt(r2, c2)) continue;
         if (isCombo(a, b)) return [{ r, c }, { r: r2, c: c2 }];
         swapGrid({ r, c }, { r: r2, c: c2 });
         const ok = findRuns().length > 0;
@@ -635,7 +735,8 @@ async function doCombo(p1, c1, p2, c2) {
 async function trySwap(a, b) {
   if (busy || state !== 'playing') return;
   if (!inBounds(b.r, b.c) || Math.abs(a.r - b.r) + Math.abs(a.c - b.c) !== 1) return;
-  busy = true; selected = null; hint = null; cleansedThisMove = 0;
+  if (shogAt(a.r, a.c) || shogAt(b.r, b.c)) return;
+  busy = true; selected = null; hint = null; cleansedThisMove = 0; freedThisMove = 0;
   const pA = grid[a.r][a.c], pB = grid[b.r][b.c];
   swapGrid(a, b);
   noise(0.1, 500, 0.05, 1.2);
@@ -676,6 +777,7 @@ function goalsMet() {
   return cfg.goals.every(g =>
     g.type === 'score' ? score >= g.target :
     g.type === 'collect' ? collected[g.color] >= g.count :
+    g.type === 'free' ? shogCount() === 0 :
     taintCount() === 0);
 }
 
@@ -701,10 +803,12 @@ async function afterMove() {
     await breakBoard();
     const missing = cfg.goals.filter(g =>
       g.type === 'score' ? score < g.target :
-      g.type === 'collect' ? collected[g.color] < g.count : taintCount() > 0);
+      g.type === 'collect' ? collected[g.color] < g.count :
+      g.type === 'free' ? shogCount() > 0 : taintCount() > 0);
     const text = missing.map(g =>
       g.type === 'score' ? `${(g.target - score).toLocaleString()} warding short` :
       g.type === 'collect' ? `${g.count - collected[g.color]} more stones needed` :
+      g.type === 'free' ? `${shogCount()} stones still engulfed` :
       `${taintCount()} tainted tiles remain`).join(' · ');
     showOverlay('The Sleeper wakes', text, null, 'Try the rite again', () => startLevel(level), true);
   } else {
@@ -750,14 +854,15 @@ async function finale() {
 async function shuffleBoard() {
   showBanner('The ruins shift…');
   noise(0.8, 300, 0.1, 0.6);
-  const pieces = [];
-  forEachPiece(p => pieces.push(p));
+  // engulfed stones stay put; only the free cells are shuffled
+  const pieces = [], spots = [];
+  forEachPiece((p, r, c) => { if (!shogAt(r, c)) { pieces.push(p); spots.push([r, c]); } });
   for (let tries = 0; tries < 200; tries++) {
     for (let i = pieces.length - 1; i > 0; i--) {
       const j = randInt(i + 1);
       [pieces[i], pieces[j]] = [pieces[j], pieces[i]];
     }
-    pieces.forEach((p, i) => { grid[Math.floor(i / COLS)][i % COLS] = p; });
+    pieces.forEach((p, i) => { grid[spots[i][0]][spots[i][1]] = p; });
     if (!findRuns().length && findMove()) break;
     if (tries === 199) { generateBoard(); return; }
   }
@@ -792,20 +897,24 @@ function generateBoard() {
 // and taint on the first level that has it. Seen intros persist across sessions.
 const INTROS = {
   ley: {
-    piece: [4, 'h'], title: 'Ley Line',
+    piece: [4, 'h'], title: 'Ley Line', iconSize: .34,
     text: 'Four stones in a row awaken a Ley Line. Match it or swap it, and it seals its whole row or column, the way its lines run.',
   },
   bomb: {
-    piece: [0, 'bomb'], title: 'Elder Sign',
+    piece: [0, 'bomb'], title: 'Elder Sign', iconSize: .3,
     text: 'An L or T shape forms an Elder Sign. Set it off and it banishes everything in the 3×3 around it.',
   },
   dart: {
     piece: [2, 'dart'], title: 'Witch-light',
-    text: 'A 2×2 square kindles a Witch-light. Set it off and it flies to a tainted stone, or one you still need.',
+    text: 'A 2×2 square kindles a Witch-light. Set it off and it calls lightning down on a tainted stone, or one you still need. Its flicker shows where.',
   },
   rainbow: {
     piece: [-1, 'rainbow'], title: 'Shining Trapezohedron',
     text: 'Five in a row calls forth the Shining Trapezohedron. Swap it with any stone to unmake every stone of that kind.',
+  },
+  shog: {
+    piece: [3, null], title: 'The Shoggoth', shog: true,
+    text: 'A shoggoth has engulfed these stones. They can\'t be moved or matched while it holds them. Clear a stone beside it, or strike it with a relic, to drive it off.',
   },
   taint: {
     piece: [1, null], title: 'The Taint', blob: true,
@@ -836,9 +945,10 @@ async function showIntro(k) {
   if (tip) markSeen('tip');
   $('introTitle').textContent = it.title;
   $('introTitle').classList.toggle('taint', !!it.blob);
+  $('introTitle').classList.toggle('shog', !!it.shog);
   $('introText').textContent = it.text;
   $('introTip').textContent = tip ? COMBO_TIP : '';
-  introOpen = { blob: it.blob, piece: makePiece(it.piece[0], it.piece[1], 0, 0) };
+  introOpen = { blob: it.blob, shog: it.shog, iconSize: it.iconSize || .62, piece: makePiece(it.piece[0], it.piece[1], 0, 0) };
   $('intro').classList.remove('hidden');
   beep(330, 1, 'sine', .06); beep(494, 1, 'sine', .04, .12); beep(659, 1.2, 'sine', .03, .24);
   await new Promise(res => { introResolve = res; });
@@ -863,7 +973,8 @@ function drawIntroIcon(now) {
   c.setTransform(1, 0, 0, 1, 0, 0);
   c.clearRect(0, 0, s, s);
   if (introOpen.blob) drawBlob(c, s / 2, s / 2, s * .36, now, 3);
-  drawPiece(c, introOpen.piece, s / 2, s / 2, s * .62, now, 1);
+  drawPiece(c, introOpen.piece, s / 2, s / 2, s * introOpen.iconSize, now, 1);
+  if (introOpen.shog) drawShoggothIcon(c, s / 2, s / 2, s * .72, now);
 }
 
 // ---------- Level flow ----------
@@ -876,8 +987,9 @@ async function startLevel(n) {
   collected = new Array(NC).fill(0);
   particles = []; fx = []; floats = []; banner = null; wreck = null; resetBoardSink();
   selected = null; hint = null; drag = null; idleTurns = 0; pendingIntros = [];
-  generateBoard();
   seedTaint(cfg.taint);
+  seedShoggoth(cfg.shoggoth);
+  generateBoard();
   buildGoals();
   state = 'playing';
   updateHUD();
@@ -890,6 +1002,7 @@ async function startLevel(n) {
   });
   await Promise.all(anims);
   if (cfg.taint && !seenIntros.has('taint')) { await wait(700); await showIntro('taint'); }
+  if (cfg.shoggoth && !seenIntros.has('shog')) { await wait(700); await showIntro('shog'); }
   busy = false;
   lastInput = performance.now();
 }
@@ -920,6 +1033,7 @@ function buildGoals() {
     } else {
       el.appendChild(iconCanvas((ic, s) => g.type === 'collect'
         ? drawPiece(ic, makePiece(g.color, null, 0, 0), s / 2, s / 2, s * 1.15, 0, 1)
+        : g.type === 'free' ? drawShoggothIcon(ic, s / 2, s / 2, s * .9, 0)
         : drawBlob(ic, s / 2, s / 2, s * .36, 0, 7)));
       const sp = document.createElement('span');
       sp.className = 'count';
@@ -947,7 +1061,7 @@ function updateHUD() {
       el.querySelector('.count').textContent = `${Math.min(collected[g.color], g.count)}/${g.count}`;
       el.classList.toggle('done', collected[g.color] >= g.count);
     } else {
-      const n = taintCount();
+      const n = g.type === 'free' ? shogCount() : taintCount();
       el.querySelector('.count').textContent = n ? `${n} left` : '';
       el.classList.toggle('done', n === 0);
     }
@@ -1080,7 +1194,7 @@ function strikeArm(i) {
   // stones near this impact are flung away from it
   const hc = (hx * boardW - PAD) / cell - .5, hr = (hy * boardH - PAD) / cell - .5;
   forEachPiece(p => {
-    if (p.fly) return;
+    if (p.fly || shogAt(Math.round(p.y), Math.round(p.x))) return; // engulfed stones sink with the board
     const dx = p.x - hc, dy = p.y - hr, d = Math.hypot(dx, dy);
     if (d > 3.2) return; // the rest go down with the board
     const k = .012 + Math.random() * .012 + .02 / (d + 1);
@@ -1227,6 +1341,118 @@ function flashAlpha() {
   return Math.max(0, k) * flash.strength;
 }
 
+// ---------- Rendering: shoggoth ----------
+// One dark, oily mass over the stones it engulfs. Eyes surface, look about, blink and sink;
+// mouths open and gnash; the whole body heaves.
+const SHOG_BODY = '#2b2d30', SHOG_EDGE = '#111214';
+const shogLevel = (r, c) => inBounds(r, c) && shogFill[r] ? Math.max(0, Math.min(1, shogFill[r][c])) : 0;
+
+function shogLumpPath(c, cx, cy, R, now, seed) {
+  const N = 20;
+  for (let i = 0; i <= N; i++) {
+    const a = i / N * TAU;
+    const k = 1 + .08 * Math.sin(4 * a + seed + now / 520) + .05 * Math.sin(7 * a - seed * 2 + now / 330);
+    const x = cx + Math.cos(a) * R * k, y = cy + Math.sin(a) * R * k;
+    i ? c.lineTo(x, y) : c.moveTo(x, y);
+  }
+  c.closePath();
+}
+
+function drawShoggothFeatures(c, cx, cy, size, l, now, seed) {
+  if (l < .4) return;
+  const a0 = Math.min(1, (l - .4) / .4);
+  c.save();
+  // eyes: each surfaces somewhere new every cycle
+  for (let i = 0; i < 3; i++) {
+    const P = 2400 + hash(seed * 3 + i) * 2200, t = now + hash(seed + i * 17) * P;
+    const n = Math.floor(t / P), ph = (t % P) / P;
+    let open = Math.min(1, Math.sin(ph * Math.PI) * 2.4);
+    if (ph > .42 && ph < .48) open *= .1; // blink
+    if (open <= .05) continue;
+    const h = hash(seed * 7 + i * 31 + n * 13), h2 = hash(seed * 11 + i * 7 + n * 29);
+    const x = cx + (h - .5) * size * .62, y = cy + (h2 - .5) * size * .62;
+    const e = size * (.07 + .07 * hash(seed + i + n * 3));
+    const look = now / 700 + seed + i, lx = Math.cos(look) * e * .3, ly = Math.sin(look * 1.3) * e * .2;
+    c.globalAlpha = a0;
+    c.beginPath(); c.ellipse(x, y, e, e * open, 0, 0, TAU);
+    c.fillStyle = '#cdc8b0'; c.fill();
+    c.beginPath(); c.ellipse(x + lx, y + ly * open, e * .55, e * .55 * open, 0, 0, TAU);
+    c.fillStyle = '#9dbb34'; c.fill();
+    c.beginPath(); c.ellipse(x + lx, y + ly * open, e * .22, e * .5 * open, 0, 0, TAU);
+    c.fillStyle = '#050505'; c.fill();
+  }
+  // mouths: open and close, teeth along the upper lip
+  for (let i = 0; i < 2; i++) {
+    const P = 3000 + hash(seed * 5 + i) * 2500, t = now + hash(seed * 2 + i * 23) * P;
+    const n = Math.floor(t / P), ph = (t % P) / P, life = Math.min(1, Math.sin(ph * Math.PI) * 2);
+    if (life <= .05) continue;
+    const h = hash(seed * 13 + i * 41 + n * 7), h2 = hash(seed * 17 + i * 3 + n * 19);
+    const x = cx + (h - .5) * size * .55, y = cy + (h2 - .5) * size * .55;
+    const w = size * (.11 + .06 * hash(seed + i * 5 + n)), gape = w * .55 * life * (.35 + .65 * Math.abs(Math.sin(now / 170 + seed + i * 2)));
+    c.globalAlpha = a0;
+    c.beginPath(); c.ellipse(x, y, w, gape, 0, 0, TAU);
+    c.fillStyle = '#060607'; c.fill();
+    c.strokeStyle = '#4a4d51'; c.lineWidth = Math.max(1, size * .02); c.stroke();
+    if (gape > w * .15) {
+      c.beginPath();
+      for (let k = -2; k <= 2; k++) {
+        const tx = x + k * w * .34, ty = y - gape * Math.sqrt(Math.max(0, 1 - (k * .34) ** 2)) * .9;
+        c.moveTo(tx - w * .08, ty); c.lineTo(tx, ty + gape * .45); c.lineTo(tx + w * .08, ty);
+      }
+      c.fillStyle = '#d6d0bd'; c.fill();
+    }
+  }
+  c.restore();
+}
+
+function drawShoggothLayer(now) {
+  const centre = (r, c) => [PAD + (c + .5) * cell, PAD + (r + .5) * cell];
+  const cells = [];
+  ctx.save();
+  // bridges and lumps share one path so the mass has no seams
+  ctx.beginPath();
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const l = shogLevel(r, c);
+      if (l <= .03) continue;
+      const [x, y] = centre(r, c), k = key(r, c);
+      cells.push([x, y, l, k]);
+      for (const [dr, dc] of [[0, 1], [1, 0]]) {
+        const l2 = Math.min(l, shogLevel(r + dr, c + dc));
+        if (l2 <= .03) continue;
+        const w = cell * .88 * l2 * (1 + .05 * Math.sin(now / 400 + k));
+        if (dc) ctx.rect(x, y - w / 2, cell, w); else ctx.rect(x - w / 2, y, w, cell);
+      }
+      shogLumpPath(ctx, x, y, cell * .6 * ease.outBack(l), now, k * 1.7);
+    }
+  }
+  if (!cells.length) { ctx.restore(); return; }
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = SHOG_EDGE; ctx.lineWidth = Math.max(2, cell * .06); ctx.stroke();
+  ctx.globalAlpha = .95; ctx.fillStyle = SHOG_BODY; ctx.fill();
+  // an oily sheen that slides over each lump
+  for (const [x, y, l, k] of cells) {
+    const sx = x + Math.sin(now / 1100 + k) * cell * .15 - cell * .12, sy = y - cell * .16;
+    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, cell * .35);
+    g.addColorStop(0, 'rgba(150,160,165,.22)'); g.addColorStop(1, 'rgba(150,160,165,0)');
+    ctx.globalAlpha = l; ctx.fillStyle = g;
+    ctx.fillRect(sx - cell * .35, sy - cell * .35, cell * .7, cell * .7);
+  }
+  ctx.globalAlpha = 1;
+  for (const [x, y, l, k] of cells) drawShoggothFeatures(ctx, x, y, cell, l, now, k + 1);
+  ctx.restore();
+}
+
+// A single lump, for the goal counter and the intro card.
+function drawShoggothIcon(c, cx, cy, size, now) {
+  c.save();
+  c.beginPath(); shogLumpPath(c, cx, cy, size * .5, now, 2);
+  c.strokeStyle = SHOG_EDGE; c.lineWidth = Math.max(1.5, size * .05); c.stroke();
+  c.fillStyle = SHOG_BODY; c.fill();
+  drawShoggothFeatures(c, cx, cy, size * .9, 1, now || 1800, 5);
+  c.restore();
+}
+
 // ---------- Rendering: stones ----------
 function roundRectPath(c, x, y, w, h, r) {
   c.moveTo(x + r, y);
@@ -1355,12 +1581,13 @@ function drawTrapezohedron(c, cx, cy, r, time) {
   c.fillStyle = g; c.fill();
   c.shadowBlur = 0;
   const core = [r * .08, -r * .06];
+  // every facet catches a different stone's colour as it turns: it holds every kind
+  const turn = Math.floor(time / 450);
   pts.forEach(([x, y], i) => {
-    if (i % 2) {
-      c.beginPath(); c.moveTo(...core); c.lineTo(x, y); c.lineTo(...pts[(i + 1) % pts.length]); c.closePath();
-      c.fillStyle = 'rgba(255,255,255,.06)'; c.fill();
-    }
+    c.beginPath(); c.moveTo(...core); c.lineTo(x, y); c.lineTo(...pts[(i + 1) % pts.length]); c.closePath();
+    c.globalAlpha = .3; c.fillStyle = STONES[(i + turn) % STONES.length].fill; c.fill();
   });
+  c.globalAlpha = 1;
   c.lineWidth = Math.max(1, r * .04);
   c.strokeStyle = 'rgba(255,255,255,.14)';
   pts.forEach(([x, y]) => { c.beginPath(); c.moveTo(...core); c.lineTo(x, y); c.stroke(); });
@@ -1375,6 +1602,11 @@ function drawTrapezohedron(c, cx, cy, r, time) {
   cg.addColorStop(0, '#fff0f0'); cg.addColorStop(.35, `rgba(255,40,40,${pulse})`); cg.addColorStop(1, 'rgba(255,0,0,0)');
   c.beginPath(); c.arc(...core, r * .3, 0, TAU); c.fillStyle = cg; c.fill();
   poly(); c.shadowBlur = 0; c.strokeStyle = 'rgba(0,0,0,.8)'; c.lineWidth = Math.max(1, r * .06); c.stroke();
+  for (let k = 0; k < STONES.length; k++) {
+    const a = time / 1400 + k * TAU / STONES.length;
+    c.beginPath(); c.arc(Math.cos(a) * r * 1.1, Math.sin(a) * r * .42, r * .075, 0, TAU);
+    c.fillStyle = STONES[k].fill; c.fill();
+  }
   c.restore();
 }
 
@@ -1400,14 +1632,59 @@ function drawElderRing(c, cx, cy, r, time, scale = 1) {
   c.restore();
 }
 
+// Ley Line: sparks pour out of both ends and run on past the stone, along the line it seals.
+function drawLeyStreaks(c, dir, cx, cy, size, r, time) {
+  const ux = dir === 'h' ? 1 : 0, uy = 1 - ux;
+  c.save();
+  c.lineCap = 'round';
+  for (let i = 0; i < 5; i++) {
+    const ph = (time / 900 + i / 5) % 1;
+    const d = r * .7 + ph * size * 2.4, len = size * .3 * (1 - ph * .5), a = (1 - ph) * .85;
+    for (const sg of [-1, 1]) {
+      const x0 = cx + ux * sg * d, y0 = cy + uy * sg * d;
+      const seg = () => { c.beginPath(); c.moveTo(x0, y0); c.lineTo(x0 + ux * sg * len, y0 + uy * sg * len); c.stroke(); };
+      c.globalAlpha = a * .35; c.strokeStyle = GLOW.ley; c.lineWidth = size * .13; seg();
+      c.globalAlpha = a; c.strokeStyle = '#d8fff0'; c.lineWidth = Math.max(1, size * .045); seg();
+    }
+  }
+  c.restore();
+}
+
+// Elder Sign: a square seal around the eight neighbouring cells, the exact area it banishes.
+function drawElderFrame(c, cx, cy, size, time) {
+  const h = size * 1.47, L = size * .4, br = .5 + .5 * Math.sin(time / 500);
+  c.save();
+  c.strokeStyle = GLOW.elder; c.lineCap = 'round'; c.lineJoin = 'round';
+  c.globalAlpha = .14 + .12 * br; c.lineWidth = Math.max(1, size * .03);
+  c.setLineDash([size * .12, size * .1]);
+  c.strokeRect(cx - h, cy - h, h * 2, h * 2);
+  c.setLineDash([]);
+  c.globalAlpha = .5 + .35 * br; c.lineWidth = Math.max(1.5, size * .055);
+  c.beginPath();
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+    c.moveTo(cx + sx * h, cy + sy * (h - L)); c.lineTo(cx + sx * h, cy + sy * h); c.lineTo(cx + sx * (h - L), cy + sy * h);
+  }
+  // a branching rune at the middle of each side
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 2, ox = Math.cos(a), oy = Math.sin(a), px = -oy, py = ox;
+    const mx = cx + ox * h, my = cy + oy * h, t = size * .13;
+    c.moveTo(mx - ox * t * 1.4, my - oy * t * 1.4); c.lineTo(mx, my);
+    c.moveTo(mx - ox * t * .7, my - oy * t * .7); c.lineTo(mx - ox * t * .7 + px * t, my - oy * t * .7 + py * t);
+  }
+  c.stroke();
+  c.restore();
+}
+
 function drawPiece(c, p, cx, cy, size, time, mult) {
   const r = size * 0.42 * p.scale * mult;
   if (r <= 0.5) return;
   if (p.special === 'rainbow') { drawTrapezohedron(c, cx, cy, r, time); return; }
-  const st = STONES[p.color];
-  const rr = p.special === 'bomb' ? r * .8 : r;
+  const st = STONES[p.color], rr = r, ley = p.special === 'h' || p.special === 'v';
   c.save();
-  if (p.special === 'bomb') drawElderRing(c, cx, cy, r, time);
+  if (ley) drawLeyStreaks(c, p.special, cx, cy, size, r, time);
+  else if (p.special === 'bomb') drawElderFrame(c, cx, cy, size, time);
+  // a Ley Line stone is drawn out along the way it seals
+  if (ley) { c.translate(cx, cy); if (p.special === 'h') c.scale(1.12, .94); else c.scale(.94, 1.12); c.translate(-cx, -cy); }
 
   // drop shadow, body, rim
   shapePath(c, st.shape, cx, cy + rr * .1, rr);
@@ -1439,19 +1716,22 @@ function drawPiece(c, p, cx, cy, size, time, mult) {
   else drawGlyph(c, st.glyph, cx, gy, rr, 'rgba(0,0,0,.55)', null);
   c.restore();
 
-  if (p.special === 'h' || p.special === 'v') {
-    // twin ley lines running the way the stone will seal
+  if (ley) {
+    // chevrons carved at each end, pointing the way it seals
     c.save();
-    c.strokeStyle = `rgba(216,255,240,${.7 + .3 * Math.sin(time / 170)})`;
-    c.shadowColor = GLOW.ley; c.shadowBlur = r * .6;
-    c.lineWidth = Math.max(1, r * .08); c.lineCap = 'round';
+    c.strokeStyle = `rgba(216,255,240,${.75 + .25 * Math.sin(time / 170)})`;
+    c.shadowColor = GLOW.ley; c.shadowBlur = r * .5;
+    c.lineWidth = Math.max(1.2, r * .1); c.lineCap = 'round'; c.lineJoin = 'round';
     c.beginPath();
-    for (const o of [-.62, .62]) {
-      if (p.special === 'h') { c.moveTo(cx - r * 1.02, cy + o * r); c.lineTo(cx + r * 1.02, cy + o * r); }
-      else { c.moveTo(cx + o * r, cy - r * 1.02); c.lineTo(cx + o * r, cy + r * 1.02); }
+    for (const sg of [-1, 1]) {
+      const pt = (a, b) => p.special === 'h' ? [cx + sg * a * r, cy + b * r] : [cx + b * r, cy + sg * a * r];
+      c.moveTo(...pt(.58, -.2)); c.lineTo(...pt(.8, 0)); c.lineTo(...pt(.58, .2));
     }
     c.stroke();
     c.restore();
+  } else if (p.special === 'bomb') {
+    shapePath(c, st.shape, cx, cy, rr);
+    c.strokeStyle = `rgba(255,200,110,${.55 + .3 * Math.sin(time / 260)})`; c.lineWidth = Math.max(1, rr * .07); c.stroke();
   } else if (p.special === 'dart') {
     drawWisp(c, cx + rr * .5, cy - rr * .55, rr * .3, time);
   }
@@ -1784,6 +2064,101 @@ function drawBackground(now) {
 // ---------- Rendering: board ----------
 function cellCenter(r, c) { return [PAD + (c + .5) * cell, PAD + (r + .5) * cell]; }
 
+// ---------- Relic preview ----------
+// While a relic is pressed or dragged, the cells it would clear are lit, including the
+// combined area when it's dragged onto another relic. Mirrors effectCells and doCombo.
+function relicPreview() {
+  if (state !== 'playing' || busy) return null;
+  const at = drag ? drag.start : selected;
+  if (!at) return null;
+  const to = drag && drag.axis && drag.n && drag.offset > .2 ? drag.n : null;
+  const A = grid[at.r][at.c], B = to && grid[to.r][to.c];
+  if (!A) return null;
+  const cells = new Set(), aims = [];
+  let color = GLOW.ley;
+  const add = (r, c) => { if (inBounds(r, c)) cells.add(key(r, c)); };
+  const area = (sp, r, c) => {
+    if (sp === 'h') for (let cc = 0; cc < COLS; cc++) add(r, cc);
+    else if (sp === 'v') for (let rr = 0; rr < ROWS; rr++) add(rr, c);
+    else if (sp === 'bomb') for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) add(r + dr, c + dc);
+  };
+  const strike = (p, r, c, n, carry) => dartAims(p, r, c, n).forEach(t => {
+    cells.add(t); aims.push([r, c, t]);
+    if (carry) area(carry, Math.floor(t / COLS), t % COLS);
+  });
+  const solo = (p, pos) => {
+    if (p.special === 'dart') { color = GLOW.wisp; strike(p, pos.r, pos.c); }
+    else if (p.special !== 'rainbow') { area(p.special, pos.r, pos.c); color = p.special === 'bomb' ? GLOW.elder : GLOW.ley; }
+  };
+  if (B && isCombo(A, B)) {
+    // after the swap A sits at `to` and B at `at`; combos centre on `to`
+    const s1 = A.special, s2 = B.special, { r, c } = to;
+    const striped = sp => sp === 'h' || sp === 'v';
+    if (s1 === 'rainbow' && s2 === 'rainbow') { forEachPiece((q, rr, cc) => add(rr, cc)); color = GLOW.void; }
+    else if (s1 === 'rainbow' || s2 === 'rainbow') {
+      const O = s1 === 'rainbow' ? B : A;
+      forEachPiece((q, rr, cc) => { if (q.color === O.color) add(rr, cc); });
+      color = GLOW.void;
+    } else if (s1 === 'dart' || s2 === 'dart') {
+      const D = s1 === 'dart' ? A : B, O = D === A ? B : A, pos = D === A ? to : at;
+      color = GLOW.wisp;
+      strike(D, pos.r, pos.c, O.special === 'dart' ? 3 : 1, O.special === 'dart' ? null : O.special);
+    } else if (striped(s1) && striped(s2)) { area('h', r, c); area('v', r, c); }
+    else if (s1 === 'bomb' && s2 === 'bomb') {
+      for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) add(r + dr, c + dc);
+      color = GLOW.elder;
+    } else {
+      for (let d = -1; d <= 1; d++) { area('h', r + d, c); area('v', r, c + d); }
+      color = GLOW.elder;
+    }
+    add(to.r, to.c); add(at.r, at.c);
+  } else if (A.special) solo(A, to || at);
+  else if (B && B.special) solo(B, at); // dragging a plain stone onto a relic moves the relic here
+  return cells.size ? { cells, aims, color } : null;
+}
+
+function drawPreview(pv, now) {
+  const pulse = .5 + .5 * Math.sin(now / 180);
+  ctx.save();
+  ctx.fillStyle = ctx.strokeStyle = pv.color;
+  ctx.lineWidth = 1.5;
+  for (const k of pv.cells) {
+    const r = Math.floor(k / COLS), c = k % COLS;
+    ctx.beginPath(); roundRectPath(ctx, PAD + c * cell + 2, PAD + r * cell + 2, cell - 4, cell - 4, cell * .14);
+    ctx.globalAlpha = .13 + .09 * pulse; ctx.fill();
+    ctx.globalAlpha = .5; ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// Lines from each witch-light to where its lightning will land.
+function drawAims(aims, alpha) {
+  ctx.save();
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (const [r0, c0, t] of aims) {
+    const [x0, y0] = cellCenter(r0, c0), [x1, y1] = cellCenter(Math.floor(t / COLS), t % COLS);
+    const pts = boltPath(x0, y0, x1, y1, cell * .18, 6);
+    const path = () => { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); };
+    ctx.globalAlpha = alpha * .4; ctx.strokeStyle = '#b9a8ff'; ctx.lineWidth = cell * .12; path(); ctx.stroke();
+    ctx.globalAlpha = alpha; ctx.strokeStyle = '#f4f0ff'; ctx.lineWidth = Math.max(1, cell * .035); path(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x1, y1, cell * .4, 0, TAU); ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// Idle witch-lights flicker toward their target every few seconds.
+const WITCH_FLICKER = 2600;
+function drawWitchFlickers(now, skip) {
+  if (state !== 'playing' || busy) return;
+  const aims = [];
+  forEachPiece((p, r, c) => {
+    if (p.special !== 'dart' || p === skip || p.x !== c || p.y !== r) return;
+    const ph = ((now + hash(key(r, c)) * WITCH_FLICKER) % WITCH_FLICKER) / WITCH_FLICKER;
+    if (ph < .1) dartAims(p, r, c, 1).forEach(t => aims.push([r, c, t, 1 - ph / .1]));
+  });
+  for (const [r, c, t, a] of aims) drawAims([[r, c, t]], .55 * a);
+}
+
 function draw(now) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, boardW, boardH);
@@ -1812,6 +2187,9 @@ function draw(now) {
     ctx.strokeStyle = 'rgba(125,255,200,.6)'; ctx.lineWidth = 1; ctx.stroke();
   }
 
+  const pv = relicPreview();
+  if (pv) drawPreview(pv, now);
+
   const hintPieces = hint ? hint.map(h => grid[h.r][h.c]) : [];
   const dragged = drag && drag.axis ? grid[drag.start.r][drag.start.c] : null;
   ctx.save();
@@ -1825,29 +2203,16 @@ function draw(now) {
   });
   if (dragged) drawPiece(ctx, dragged, PAD + (dragged.x + .5) * cell, PAD + (dragged.y + .5) * cell, cell, now, 1.1);
   ctx.restore();
+  drawShoggothLayer(now);
+  if (pv && pv.aims.length) drawAims(pv.aims, .8);
+  else drawWitchFlickers(now);
 
   for (const f of fx) {
     if (f.t < 0 || f.type === 'tendril') continue;
     const p = f.t / f.dur, a = 1 - p;
     ctx.save();
     ctx.globalAlpha = a;
-    if (f.type === 'dart') {
-      const [x0, y0] = cellCenter(f.r0, f.c0), [x1, y1] = cellCenter(f.r1, f.c1);
-      const at = q => {
-        const e = ease.inOut(q);
-        return [x0 + (x1 - x0) * e, y0 + (y1 - y0) * e - Math.sin(q * Math.PI) * cell * 1.2];
-      };
-      const color = f.carry ? GLOW.elder : GLOW.wisp;
-      for (let i = 1; i <= 6; i++) {
-        const [tx, ty] = at(Math.max(0, p - i * .035));
-        ctx.globalAlpha = .45 - i * .06;
-        ctx.beginPath(); ctx.arc(tx, ty, cell * (.13 - i * .015), 0, TAU);
-        ctx.fillStyle = color; ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-      const [x, y] = at(p);
-      drawWisp(ctx, x, y, cell * .22, now, color);
-    } else if (f.type === 'beam') {
+    if (f.type === 'beam') {
       const w = cell * .9 * (1 - p * .7);
       ctx.shadowColor = GLOW.ley; ctx.shadowBlur = 28; ctx.fillStyle = '#d8fff0';
       if (f.dir === 'h') ctx.fillRect(PAD, PAD + (f.r + .5) * cell - w / 2, cell * COLS, w);
@@ -1950,6 +2315,9 @@ function frame(now) {
   for (let r = 0; r < taintFill.length; r++)
     for (let c = 0; c < COLS; c++)
       taintFill[r][c] = taint[r][c] ? Math.min(1, taintFill[r][c] + dt / 450) : Math.max(0, taintFill[r][c] - dt / 280);
+  for (let r = 0; r < shogFill.length; r++)
+    for (let c = 0; c < COLS; c++)
+      shogFill[r][c] = shog[r][c] ? Math.min(1, shogFill[r][c] + dt / 600) : Math.max(0, shogFill[r][c] - dt / 260);
   updateDrone(now);
   if (state === 'playing' && !busy && !hint && !selected && now - lastInput > 5000) hint = findMove();
   drawBackground(now);
@@ -1973,7 +2341,7 @@ canvas.addEventListener('pointerdown', e => {
   hint = null;
   if (busy || state !== 'playing') return;
   const at = cellAt(e);
-  if (!at) return;
+  if (!at || shogAt(at.r, at.c)) return;
   if (selected && Math.abs(selected.r - at.r) + Math.abs(selected.c - at.c) === 1) {
     const s = selected;
     selected = null;
@@ -2010,7 +2378,7 @@ function dragTo(e) {
   const s = drag.start, A = grid[s.r][s.c];
   const raw = (drag.axis === 'h' ? dx : dy) / cell, sign = Math.sign(raw);
   const n = drag.axis === 'h' ? { r: s.r, c: s.c + sign } : { r: s.r + sign, c: s.c };
-  if (!sign || !inBounds(n.r, n.c)) {
+  if (!sign || !inBounds(n.r, n.c) || shogAt(n.r, n.c)) {
     resetNeighbor();
     A.x = s.c; A.y = s.r; drag.offset = 0;
     return;
@@ -2076,6 +2444,7 @@ resize();
 
 cfg = levelConfig(level);
 collected = new Array(NC).fill(0);
+seedShoggoth(0);
 generateBoard();
 seedTaint(0);
 buildGoals();

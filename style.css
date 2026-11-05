@@ -253,6 +253,7 @@ button.ghost {
   text-shadow: 0 0 14px rgba(61, 255, 176, .45);
 }
 #intro h2.taint { color: #e6c4ff; text-shadow: 0 0 14px rgba(180, 77, 255, .6); }
+#intro h2.shog { color: #dcdad0; text-shadow: 0 0 14px rgba(157, 187, 52, .45); }
 #intro .tip { margin-top: -6px; font-size: 14px; color: var(--gold); }
 #intro .tip:empty { display: none; }
 
