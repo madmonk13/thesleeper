@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Idol Profiles</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #e4f5ee; --muted: rgba(200, 235, 222, .72); --edge: rgba(125, 255, 200, .16); }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    font-family: "IM Fell English", Georgia, serif;
+    background: radial-gradient(ellipse at 50% 0%, #0b2421 0%, #04100f 45%, #020807 100%) fixed;
+  }
+  header { max-width: 1100px; margin: 0 auto; padding: 28px 16px 4px; text-align: center; }
+  h1 {
+    margin: 0 0 6px;
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 900;
+    font-size: 30px;
+    color: #c9ffe8;
+    text-shadow: 0 0 18px rgba(61, 255, 176, .4);
+  }
+  header p { margin: 0 auto; max-width: 660px; font-size: 19px; line-height: 1.5; color: #e2f2ec; }
+  .controls { display: flex; justify-content: center; gap: 10px; margin: 16px 0 4px; }
+  button {
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 700;
+    letter-spacing: .06em;
+    color: var(--ink);
+    border: 1px solid rgba(125, 255, 200, .3);
+    background: rgba(6, 24, 22, .6);
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 12px 16px 40px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+    gap: 18px;
+  }
+  .study {
+    background: linear-gradient(180deg, rgba(14, 44, 39, .55), rgba(4, 16, 14, .75));
+    border: 1px solid var(--edge);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .study h2 { margin: 0; font-family: Cinzel, Georgia, serif; font-size: 20px; letter-spacing: .05em; }
+  .study .tag {
+    margin: 2px 0 12px;
+    font-family: Cinzel, Georgia, serif;
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .board { display: block; width: 100%; cursor: pointer; touch-action: manipulation; }
+  .row { display: flex; gap: 14px; align-items: center; margin-top: 12px; }
+  .icons { flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .icons canvas { display: block; }
+  .pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 12px 3px 6px;
+    border: 1px solid var(--edge);
+    border-radius: 999px;
+    background: rgba(6, 24, 22, .32);
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .study p { margin: 0; font-size: 18px; line-height: 1.45; color: #e2f2ec; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Idol Profiles</h1>
+    <p>Four darker idols, all in profile and facing left. Every mouth slopes down toward the back, so none of them reads as a smile. Each is shown standing in the flood with its goal-pill and intro-card icons. Use the buttons to see the cracks and the topple.</p>
+    <div class="controls"><button data-hp="3">Intact</button><button data-hp="2">1 blow</button><button data-hp="1">2 blows</button><button data-hp="0">Topple</button></div>
+  </header>
+  <main id="studies"></main>
+
+<script>
+(() => {
+'use strict';
+
+const COLS = 6, ROWS = 5, PAD = 8, TAU = Math.PI * 2;
+const IDOL = [2, 2], WATER = ['..X...', '.XIXX.', '..XX..', '......', '......'];
+const STONES = [
+  { shape: 'circle',   light: '#a9ecd6', fill: '#3e9c86', dark: '#103b33' },
+  { shape: 'square',   light: '#fff6e0', fill: '#cdbf9c', dark: '#5f5440' },
+  { shape: 'star',     light: '#ffb8a6', fill: '#c4543f', dark: '#521810' },
+  { shape: 'diamond',  light: '#c4aef0', fill: '#5d3f8f', dark: '#1c0f31' },
+  { shape: 'hex',      light: '#d4f7a4', fill: '#7aa83e', dark: '#243f12' },
+  { shape: 'triangle', light: '#ffe6a8', fill: '#c9932f', dark: '#563809' },
+];
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const clamp01 = v => Math.max(0, Math.min(1, v));
+const smooth = (a, b, v) => { const t = clamp01((v - a) / (b - a)); return t * t * (3 - 2 * t); };
+const outBack = t => { const s = 1.70158; t -= 1; return t * t * ((s + 1) * t + s) + 1; };
+const dpr = Math.min(2, window.devicePixelRatio || 1);
+
+// ---------- board and stones (simplified from the game) ----------
+function roundRectPath(c, x, y, w, h, r) {
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function shapePath(c, shape, cx, cy, r) {
+  c.beginPath();
+  switch (shape) {
+    case 'circle': c.arc(cx, cy, r * .9, 0, TAU); break;
+    case 'square': roundRectPath(c, cx - r * .8, cy - r * .8, r * 1.6, r * 1.6, r * .22); break;
+    case 'star':
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + i * Math.PI / 5, rad = i % 2 ? r * .52 : r * 1.02;
+        const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad + r * .06;
+        i ? c.lineTo(px, py) : c.moveTo(px, py);
+      }
+      c.closePath();
+      break;
+    case 'diamond':
+      c.moveTo(cx, cy - r); c.lineTo(cx + r * .78, cy); c.lineTo(cx, cy + r); c.lineTo(cx - r * .78, cy);
+      c.closePath();
+      break;
+    case 'hex':
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3, px = cx + Math.cos(a) * r * .92, py = cy + Math.sin(a) * r * .92;
+        i ? c.lineTo(px, py) : c.moveTo(px, py);
+      }
+      c.closePath();
+      break;
+    case 'triangle':
+      c.moveTo(cx, cy - r * .92); c.lineTo(cx + r * .95, cy + r * .72); c.lineTo(cx - r * .95, cy + r * .72);
+      c.closePath();
+      break;
+  }
+}
+
+function drawStone(c, st, cx, cy, r) {
+  shapePath(c, st.shape, cx, cy + r * .1, r);
+  c.fillStyle = 'rgba(0,0,0,.45)'; c.fill();
+  shapePath(c, st.shape, cx, cy, r);
+  const g = c.createLinearGradient(cx - r * .4, cy - r, cx + r * .4, cy + r);
+  g.addColorStop(0, st.light); g.addColorStop(.38, st.fill); g.addColorStop(1, st.dark);
+  c.fillStyle = g; c.fill();
+  c.lineJoin = 'round'; c.lineWidth = Math.max(1, r * .07); c.strokeStyle = st.dark; c.stroke();
+}
+
+function drawBoard(c, cs, W, H) {
+  c.beginPath(); roundRectPath(c, 0, 0, W, H, 14);
+  c.fillStyle = 'rgba(3,12,12,.55)'; c.fill();
+  c.strokeStyle = 'rgba(125,255,200,.14)'; c.lineWidth = 1.5; c.stroke();
+  for (let r = 0; r < ROWS; r++) {
+    for (let col = 0; col < COLS; col++) {
+      const x = PAD + col * cs + 2, y = PAD + r * cs + 2, w = cs - 4;
+      c.beginPath(); roundRectPath(c, x, y, w, w, cs * .14);
+      c.fillStyle = (r + col) % 2 ? 'rgba(140,190,175,.05)' : 'rgba(140,190,175,.1)';
+      c.fill();
+      c.strokeStyle = 'rgba(0,0,0,.35)'; c.lineWidth = 1; c.stroke();
+      if (r !== IDOL[0] || col !== IDOL[1]) drawStone(c, STONES[Math.floor(hash(r * 31 + col * 7 + 3) * 6)], PAD + (col + .5) * cs, PAD + (r + .5) * cs, cs * .42);
+    }
+  }
+}
+
+// ---------- flood (as in the game) ----------
+function drawWater(c, cs, now) {
+  const cells = [];
+  WATER.forEach((row, r) => [...row].forEach((ch, col) => { if (ch === 'X') cells.push([r, col]); }));
+  c.save();
+  c.beginPath();
+  for (const [r, col] of cells) c.rect(PAD + col * cs, PAD + r * cs, cs, cs);
+  const g = c.createLinearGradient(0, PAD, 0, PAD + ROWS * cs);
+  g.addColorStop(0, 'rgba(38,118,116,.58)'); g.addColorStop(1, 'rgba(8,48,58,.7)');
+  c.fillStyle = g; c.fill();
+  c.save(); c.clip();
+  c.globalCompositeOperation = 'lighter';
+  c.lineWidth = Math.max(1, cs * .045); c.strokeStyle = 'rgba(120,230,215,.09)';
+  const W = COLS * cs, H = ROWS * cs;
+  for (let i = 0; i < 7; i++) {
+    c.beginPath();
+    for (let j = 0; j <= 24; j++) {
+      const u = j / 24, x = PAD + u * W, y = PAD + (i - .5) / 6 * H + Math.sin(u * 7 + now / 900 + i * 1.7) * cs * .22;
+      j ? c.lineTo(x, y) : c.moveTo(x, y);
+    }
+    c.stroke();
+  }
+  c.restore();
+  c.strokeStyle = 'rgba(175,245,235,.5)'; c.lineWidth = Math.max(1, cs * .03);
+  c.beginPath();
+  for (const [r, col] of cells) {
+    if (r > 0 && WATER[r - 1][col] === 'X') continue;
+    for (let j = 0; j <= 8; j++) {
+      const x = PAD + (col + j / 8) * cs, y = PAD + r * cs + Math.sin(j / 8 * TAU + now / 350 + col * 2) * cs * .025;
+      j ? c.lineTo(x, y) : c.moveTo(x, y);
+    }
+  }
+  c.stroke();
+  c.restore();
+}
+
+// ---------- carving helpers ----------
+// Everything is lit from the upper left. Carved lines are a dark groove with a pale lower-right
+// lip; hollows are dark inside with light catching their lower rim. No outlines anywhere.
+const P = (s, pts) => pts.map(([x, y]) => [x * s, y * s]);
+function poly(c, pts) { c.beginPath(); pts.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y)); }
+
+function shade(c, path, s, light, mid, dark) {
+  path();
+  const g = c.createLinearGradient(-s * .6, -s * .9, s * .6, s * .9);
+  g.addColorStop(0, light); g.addColorStop(.45, mid); g.addColorStop(1, dark);
+  c.fillStyle = g; c.fill();
+  c.save(); path(); c.clip();
+  const h = c.createRadialGradient(-s * .3, -s * .55, 0, -s * .3, -s * .55, s * .9);
+  h.addColorStop(0, 'rgba(255,255,255,.2)'); h.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = h; c.fillRect(-s, -s * 1.1, s * 2, s * 2.2);
+  const ao = c.createLinearGradient(0, s * .1, 0, s * .9);
+  ao.addColorStop(0, 'rgba(0,0,0,0)'); ao.addColorStop(1, 'rgba(0,0,0,.35)');
+  c.fillStyle = ao; c.fillRect(-s, -s * 1.1, s * 2, s * 2.2);
+  c.restore();
+}
+
+function groove(c, pts, w, depth = .42, lip = .18) {
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  poly(c, pts); c.strokeStyle = `rgba(0,0,0,${depth})`; c.lineWidth = w; c.stroke();
+  c.save(); c.translate(w * .45, w * .45);
+  poly(c, pts); c.strokeStyle = `rgba(255,255,255,${lip})`; c.lineWidth = w * .5; c.stroke();
+  c.restore();
+}
+function curveGroove(c, x0, y0, cx, cy, x1, y1, w, depth = .42, lip = .18) {
+  c.lineCap = 'round';
+  c.beginPath(); c.moveTo(x0, y0); c.quadraticCurveTo(cx, cy, x1, y1);
+  c.strokeStyle = `rgba(0,0,0,${depth})`; c.lineWidth = w; c.stroke();
+  c.beginPath(); c.moveTo(x0 + w * .45, y0 + w * .45); c.quadraticCurveTo(cx + w * .45, cy + w * .45, x1 + w * .45, y1 + w * .45);
+  c.strokeStyle = `rgba(255,255,255,${lip})`; c.lineWidth = w * .5; c.stroke();
+}
+function hollow(c, x, y, rx, ry, depth = .6) {
+  const g = c.createRadialGradient(x - rx * .25, y - ry * .3, 0, x, y, Math.max(rx, ry));
+  g.addColorStop(0, `rgba(0,0,0,${depth})`); g.addColorStop(.75, `rgba(0,0,0,${depth * .6})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.beginPath(); c.ellipse(x, y, rx, ry, 0, 0, TAU); c.fillStyle = g; c.fill();
+  c.beginPath(); c.ellipse(x, y, rx * .95, ry * .95, 0, -.3, 1.9);
+  c.strokeStyle = 'rgba(255,255,255,.2)'; c.lineWidth = Math.max(.6, rx * .14); c.stroke();
+}
+function ember(c, x, y, r, now, col) {
+  const k = .6 + .25 * Math.sin(now / 700 + x);
+  c.save(); c.globalCompositeOperation = 'lighter';
+  const g = c.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, `rgba(${col},${.9 * k})`); g.addColorStop(.35, `rgba(${col},${.35 * k})`); g.addColorStop(1, `rgba(${col},0)`);
+  c.fillStyle = g; c.fillRect(x - r, y - r, r * 2, r * 2);
+  c.restore();
+}
+function speckle(c, s, n, seed, x0, x1, y0, y1) {
+  for (let i = 0; i < n; i++) {
+    const h = seed * 31 + i * 7, x = (x0 + (x1 - x0) * hash(h)) * s, y = (y0 + (y1 - y0) * hash(h + 1)) * s, r = s * (.008 + .02 * hash(h + 2));
+    c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = hash(h + 3) > .5 ? 'rgba(0,0,0,.16)' : 'rgba(255,255,255,.1)'; c.fill();
+  }
+}
+function drips(c, s, now, xs, y0, len, col) {
+  xs.forEach((x, i) => {
+    const ph = (now / 1500 + i * .37) % 1;
+    c.globalAlpha = (1 - ph) * .75;
+    c.beginPath(); c.ellipse(x * s, y0 * s + ph * len * s, s * .022, s * .034, 0, 0, TAU); c.fillStyle = col; c.fill();
+  });
+  c.globalAlpha = 1;
+}
+const CRACKS = [
+  [[-.12, -.8], [-.03, -.62], [-.15, -.46], [-.05, -.28], [-.17, -.06]],
+  [[.2, -.04], [.09, .14], [.23, .32], [.1, .56]],
+];
+function cracks(c, s, hp, glow) {
+  for (let i = 0; i < Math.min(2, 3 - hp); i++) {
+    const pts = P(s, CRACKS[i]);
+    if (glow) {
+      c.save(); c.globalCompositeOperation = 'lighter';
+      poly(c, pts); c.strokeStyle = 'rgba(160,255,210,.35)'; c.lineWidth = s * .09; c.lineCap = 'round'; c.stroke();
+      poly(c, pts); c.strokeStyle = 'rgba(230,255,240,.9)'; c.lineWidth = s * .025; c.stroke();
+      c.restore();
+    } else groove(c, pts, Math.max(1.2, s * .05), .75, .28);
+  }
+}
+function groundShadow(c, s, w = .7) {
+  c.beginPath(); c.ellipse(0, s * .86, s * w, s * .12, 0, 0, TAU);
+  const g = c.createRadialGradient(0, s * .86, 0, 0, s * .86, s * w);
+  g.addColorStop(0, 'rgba(0,0,0,.5)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g; c.fill();
+}
+
+// ---------- profile helpers ----------
+let c_ = null; // the context the path builders draw into
+// Every idol faces left. A rim of light catches the upper-left edges so dark stone still reads.
+function rim(c, path, s, col, w = .035) {
+  c.save(); path(); c.clip();
+  c.translate(s * w * .6, s * w * .6); path();
+  c.strokeStyle = col; c.lineWidth = s * w; c.stroke();
+  c.restore();
+}
+function form(c, path, s, m) { shade(c, path, s, m.light, m.mid, m.dark); rim(c, path, s, m.rim); }
+// a lidless fish eye under a heavy brow: the lid cuts straight across, so it glowers
+function glower(c, x, y, r, now, m) {
+  hollow(c, x, y, r * 1.45, r * 1.25, .7);
+  const g = c.createRadialGradient(x - r * .3, y - r * .3, 0, x, y, r);
+  g.addColorStop(0, '#34403b'); g.addColorStop(1, '#030504');
+  c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = g; c.fill();
+  ember(c, x + r * .1, y + r * .15, r * 1.2, now, m.eye);
+  c.save(); c.beginPath(); c.arc(x, y, r * 1.05, 0, TAU); c.clip();
+  c.beginPath(); c.moveTo(x - r * 1.3, y - r * .05); c.lineTo(x + r * 1.3, y - r * .45); c.lineTo(x + r * 1.3, y - r * 1.4); c.lineTo(x - r * 1.3, y - r * 1.4); c.closePath();
+  c.fillStyle = m.mid; c.fill();
+  c.restore();
+  curveGroove(c, x - r * 1.4, y + r * .02, x, y - r * .3, x + r * 1.4, y - r * .5, Math.max(.8, r * .3), .55, .14);
+}
+function tendril(c, x, y, len, sway, w, col, now, seed) {
+  // a tapering hanging barbel or finger
+  const N = 8;
+  let px = x, py = y;
+  for (let i = 0; i < N; i++) {
+    const f = (i + 1) / N;
+    const nx = x + Math.sin(f * 2 + now / 1300 + seed) * sway * f, ny = y + len * f;
+    c.beginPath(); c.moveTo(px, py); c.lineTo(nx, ny);
+    c.strokeStyle = col; c.lineWidth = Math.max(.5, w * (1 - f * .8)); c.lineCap = 'round'; c.stroke();
+    px = nx; py = ny;
+  }
+}
+
+// ---------- A. Basalt crouch ----------
+const crouchSide = s => () => {
+  const c = c_;
+  c.beginPath();
+  c.moveTo(-.52 * s, .82 * s);
+  c.lineTo(.56 * s, .82 * s);
+  c.bezierCurveTo(.7 * s, .5 * s, .66 * s, 0, .42 * s, -.32 * s);
+  c.bezierCurveTo(.3 * s, -.5 * s, .18 * s, -.56 * s, .08 * s, -.6 * s);
+  c.bezierCurveTo(-.05 * s, -.86 * s, -.42 * s, -.74 * s, -.64 * s, -.44 * s);
+  c.lineTo(-.62 * s, -.36 * s);
+  c.bezierCurveTo(-.5 * s, -.26 * s, -.36 * s, -.2 * s, -.22 * s, -.16 * s);
+  c.bezierCurveTo(-.32 * s, 0, -.52 * s, .12 * s, -.58 * s, .3 * s);
+  c.bezierCurveTo(-.6 * s, .5 * s, -.5 * s, .66 * s, -.52 * s, .82 * s);
+  c.closePath();
+};
+function crouchFigure(c, s, now, hp, m) {
+  c_ = c;
+  // dorsal fin down the back, behind everything
+  const fin = () => poly(c, P(s, [[.1, -.62], [.36, -.76], [.58, -.58], [.73, -.3], [.75, -.02], [.6, .05], [.44, -.3]]));
+  form(c, fin, s, m);
+  for (const [x, y] of [[.36, -.74], [.56, -.57], [.71, -.3], [.73, -.05]]) groove(c, [[.3 * s, -.42 * s], [x * s, y * s]], Math.max(.6, s * .02), .4, .1);
+  const body = crouchSide(s);
+  form(c, body, s, m);
+  // haunch and the long arm folded over the knee
+  form(c, () => { c.beginPath(); c.ellipse(.04 * s, .42 * s, .44 * s, .2 * s, -.25, 0, TAU); }, s, m);
+  const arm = () => {
+    c.beginPath();
+    c.moveTo(.12 * s, -.3 * s);
+    c.quadraticCurveTo(.32 * s, -.05 * s, .05 * s, .24 * s);
+    c.lineTo(-.4 * s, .25 * s); c.lineTo(-.43 * s, .12 * s); c.lineTo(-.02 * s, .1 * s);
+    c.quadraticCurveTo(.12 * s, -.05 * s, -.02 * s, -.26 * s);
+    c.closePath();
+  };
+  form(c, arm, s, m);
+  // webbed fingers hanging over the knee
+  for (let i = 0; i < 3; i++) tendril(c, (-.42 + i * .03) * s, .18 * s, (.24 + i * .02) * s, s * .03, s * .045, m.mid, now * .2, i);
+  c.save(); body(); c.clip();
+  glower(c, -.3 * s, -.55 * s, .075 * s, now, m);
+  // a long, grim mouth: the corner sits lower than the snout
+  curveGroove(c, -.61 * s, -.39 * s, -.47 * s, -.38 * s, -.33 * s, -.3 * s, Math.max(1, s * .04), .6, .12);
+  for (let i = 0; i < 3; i++) {
+    const x = (-.1 + i * .06) * s;
+    curveGroove(c, x, -.52 * s, x + .06 * s, -.4 * s, x, -.28 * s, Math.max(.6, s * .022), .45, .1);
+  }
+  speckle(c, s, 30, 5, -.6, .6, -.8, .8);
+  cracks(c, s, hp, false);
+  c.restore();
+  drips(c, s, now, [-.5, -.36], -.3, .5, 'rgba(160,225,215,.85)');
+}
+const BASALT = { light: '#5f6c65', mid: '#2e3934', dark: '#101613', rim: 'rgba(150,225,205,.16)', eye: '120,255,200' };
+function drawBasalt(c, s, now, hp) {
+  groundShadow(c, s, .75);
+  shade(c, () => poly(c, P(s, [[-.72, .76], [.74, .76], [.76, .92], [-.74, .92]])), s, '#56605a', '#333b37', '#171c1a');
+  crouchFigure(c, s, now, hp, BASALT);
+}
+
+// ---------- B. Obsidian head ----------
+function drawHead(c, s, now, hp) {
+  const m = { light: '#47524e', mid: '#1b2320', dark: '#050908', rim: 'rgba(170,240,225,.2)', eye: '255,120,90' };
+  groundShadow(c, s, .85);
+  // the silt it has sunk into
+  const silt = c.createRadialGradient(0, .78 * s, 0, 0, .78 * s, .9 * s);
+  silt.addColorStop(0, 'rgba(48,46,34,.95)'); silt.addColorStop(.6, 'rgba(30,30,22,.7)'); silt.addColorStop(1, 'rgba(20,22,16,0)');
+  c.save(); c.scale(1, .3); c.beginPath(); c.arc(0, .78 * s / .3, .9 * s, 0, TAU); c.restore();
+  c.save(); c.translate(0, .78 * s); c.scale(1, .22); c.translate(0, -.78 * s);
+  c.fillStyle = silt; c.fillRect(-s, -.2 * s, 2 * s, 2 * s); c.restore();
+  // the dark of the gaping mouth
+  poly(c, P(s, [[-.74, -.1], [-.38, .07], [-.7, .11]])); c.fillStyle = '#020302'; c.fill();
+  const head = () => {
+    c.beginPath();
+    c.moveTo(.62 * s, .66 * s);
+    c.bezierCurveTo(.8 * s, .1 * s, .7 * s, -.5 * s, .36 * s, -.78 * s);
+    c.bezierCurveTo(.1 * s, -.95 * s, -.3 * s, -.62 * s, -.74 * s, -.2 * s);
+    c.lineTo(-.74 * s, -.1 * s);
+    c.lineTo(-.38 * s, .07 * s);
+    c.lineTo(-.7 * s, .11 * s);
+    c.bezierCurveTo(-.68 * s, .34 * s, -.4 * s, .52 * s, -.1 * s, .64 * s);
+    c.closePath();
+  };
+  form(c, head, s, m);
+  c.save(); head(); c.clip();
+  glower(c, -.2 * s, -.34 * s, .12 * s, now, m);
+  // great gill covers
+  for (const [x, w] of [[.14, .05], [.3, .035]]) curveGroove(c, x * s, -.5 * s, (x + .2) * s, -.05 * s, (x - .02) * s, .46 * s, Math.max(1, s * w), .6, .14);
+  // glassy highlights along the brow and jaw
+  c.lineCap = 'round';
+  c.beginPath(); c.moveTo(.05 * s, -.74 * s); c.quadraticCurveTo(-.3 * s, -.6 * s, -.6 * s, -.28 * s);
+  c.strokeStyle = 'rgba(220,255,245,.32)'; c.lineWidth = Math.max(1, s * .025); c.stroke();
+  c.beginPath(); c.moveTo(-.62 * s, .2 * s); c.quadraticCurveTo(-.45 * s, .4 * s, -.15 * s, .5 * s);
+  c.strokeStyle = 'rgba(220,255,245,.16)'; c.lineWidth = Math.max(1, s * .02); c.stroke();
+  cracks(c, s, hp, false);
+  c.restore();
+  // barbels hanging from the chin
+  for (let i = 0; i < 3; i++) tendril(c, (-.62 + i * .08) * s, (.2 + i * .04) * s, (.34 - i * .05) * s, s * .06, s * .035, '#141b19', now, i * 2);
+}
+
+// ---------- C. Robed Deep One ----------
+function drawRobed(c, s, now, hp) {
+  const m = { light: '#6b5a3c', mid: '#2e2518', dark: '#0d0905', rim: 'rgba(235,190,130,.16)', eye: '150,255,190' };
+  groundShadow(c, s, .75);
+  // a crooked staff, held in front
+  c.lineCap = 'round';
+  c.beginPath(); c.moveTo(-.8 * s, -.7 * s); c.quadraticCurveTo(-.84 * s, .1 * s, -.76 * s, .86 * s);
+  c.strokeStyle = '#2a2014'; c.lineWidth = s * .06; c.stroke();
+  c.strokeStyle = 'rgba(235,190,130,.25)'; c.lineWidth = s * .018; c.stroke();
+  form(c, () => { c.beginPath(); c.ellipse(-.8 * s, -.74 * s, .06 * s, .1 * s, -.3, 0, TAU); }, s, m);
+  const robe = () => {
+    c.beginPath();
+    c.moveTo(-.56 * s, .84 * s); c.lineTo(.58 * s, .84 * s);
+    c.bezierCurveTo(.66 * s, .4 * s, .64 * s, -.05 * s, .42 * s, -.36 * s);
+    c.bezierCurveTo(.32 * s, -.52 * s, .2 * s, -.64 * s, .02 * s, -.68 * s);
+    c.bezierCurveTo(-.16 * s, -.7 * s, -.3 * s, -.6 * s, -.34 * s, -.44 * s);
+    c.lineTo(-.3 * s, -.2 * s);
+    c.bezierCurveTo(-.34 * s, 0, -.46 * s, .4 * s, -.56 * s, .84 * s);
+    c.closePath();
+  };
+  form(c, robe, s, m);
+  c.save(); robe(); c.clip();
+  // heavy folds falling from the hump
+  for (const [x0, x1] of [[.3, .42], [.12, .18], [-.06, -.08], [-.24, -.34]]) curveGroove(c, x0 * s, -.3 * s, (x0 + .08) * s, .3 * s, x1 * s, .84 * s, Math.max(.8, s * .03), .45, .12);
+  // tarnish blooming green
+  for (let i = 0; i < 6; i++) {
+    const x = (-.3 + .7 * hash(i * 9 + 1)) * s, y = (-.4 + 1.1 * hash(i * 9 + 2)) * s, r = s * (.1 + .1 * hash(i * 9 + 3));
+    const g = c.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(50,110,95,.45)'); g.addColorStop(1, 'rgba(50,110,95,0)');
+    c.fillStyle = g; c.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // shadow inside the cowl
+  const sh = c.createRadialGradient(-.3 * s, -.42 * s, 0, -.3 * s, -.42 * s, .3 * s);
+  sh.addColorStop(0, 'rgba(0,0,0,.75)'); sh.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = sh; c.fillRect(-.6 * s, -.72 * s, .6 * s, .6 * s);
+  cracks(c, s, hp, false);
+  c.restore();
+  // the head pushes forward out of the hood
+  const head = () => {
+    c.beginPath();
+    c.moveTo(-.22 * s, -.6 * s);
+    c.bezierCurveTo(-.36 * s, -.7 * s, -.56 * s, -.6 * s, -.74 * s, -.4 * s);
+    c.lineTo(-.72 * s, -.3 * s);
+    c.bezierCurveTo(-.58 * s, -.16 * s, -.4 * s, -.1 * s, -.22 * s, -.14 * s);
+    c.closePath();
+  };
+  form(c, head, s, { ...m, light: '#4f4230', mid: '#231c12' });
+  c.save(); head(); c.clip();
+  glower(c, -.46 * s, -.48 * s, .07 * s, now, { ...m, mid: '#231c12' });
+  curveGroove(c, -.72 * s, -.34 * s, -.58 * s, -.31 * s, -.42 * s, -.22 * s, Math.max(.8, s * .035), .6, .1);
+  for (let i = 0; i < 3; i++) {
+    const x = (-.34 + i * .05) * s;
+    curveGroove(c, x, -.48 * s, x + .05 * s, -.36 * s, x, -.24 * s, Math.max(.6, s * .02), .45, .08);
+  }
+  c.restore();
+  // the hand gripping the staff
+  form(c, () => { c.beginPath(); c.ellipse(-.72 * s, .1 * s, .1 * s, .07 * s, .4, 0, TAU); }, s, m);
+  for (let i = 0; i < 3; i++) tendril(c, (-.8 + i * .03) * s, .12 * s, .12 * s, s * .01, s * .03, '#1c150c', now * .2, i);
+  drips(c, s, now, [-.66, -.5], -.24, .5, 'rgba(160,225,215,.85)');
+}
+
+// ---------- D. Relief ----------
+function drawRelief(c, s, now, hp) {
+  const slate = { light: '#535e59', mid: '#2a322f', dark: '#0f1312', rim: 'rgba(160,220,205,.14)' };
+  groundShadow(c, s, .6);
+  const slab = () => {
+    c.beginPath();
+    c.moveTo(-.5 * s, .86 * s); c.lineTo(-.48 * s, -.74 * s);
+    c.quadraticCurveTo(-.46 * s, -.92 * s, 0, -.93 * s); c.quadraticCurveTo(.46 * s, -.92 * s, .48 * s, -.74 * s);
+    c.lineTo(.5 * s, .86 * s); c.closePath();
+  };
+  form(c, slab, s, slate);
+  c.save(); slab(); c.clip();
+  speckle(c, s, 40, 11, -.5, .5, -.9, .86);
+  // a carved border, and glyph bands above and below the panel
+  groove(c, P(s, [[-.4, .78], [-.39, -.66], [.39, -.66], [.4, .78], [-.4, .78]]), Math.max(.8, s * .03), .5, .12);
+  for (const y of [-.78, .7]) for (let i = 0; i < 4; i++) {
+    const x = (-.24 + i * .16) * s, yy = y * s, h = hash(i * 13 + y * 10), w = Math.max(.6, s * .02);
+    if (h < .5) groove(c, [[x - .04 * s, yy], [x + .04 * s, yy - .03 * s]], w, .45, .1);
+    else { c.beginPath(); c.arc(x, yy, .03 * s, 0, TAU); c.strokeStyle = 'rgba(0,0,0,.45)'; c.lineWidth = w; c.stroke(); }
+  }
+  // the god in raised relief: a shadow down and right, then the figure
+  c.save(); c.translate(.02 * s, 0); c.scale(.58, .58);
+  c.save(); c.translate(.05 * s, .05 * s); c_ = c; crouchSide(s)(); c.fillStyle = 'rgba(0,0,0,.55)'; c.fill(); c.restore();
+  crouchFigure(c, s, now, 3, { light: '#6a7670', mid: '#38423e', dark: '#161b19', rim: 'rgba(170,235,215,.18)', eye: '120,255,200' });
+  c.restore();
+  // water stain rising up the foot of the slab
+  const wl = c.createLinearGradient(0, .4 * s, 0, .86 * s);
+  wl.addColorStop(0, 'rgba(40,90,70,0)'); wl.addColorStop(1, 'rgba(40,90,70,.5)');
+  c.fillStyle = wl; c.fillRect(-s, .4 * s, 2 * s, .5 * s);
+  cracks(c, s, hp, false);
+  c.restore();
+}
+
+// ---------- the studies ----------
+const DESIGNS = [
+  { name: 'Basalt', tag: 'Crouched, in profile', draw: drawBasalt,
+    text: 'A hunched figure of wet black basalt crouched on a plinth, with a ragged fin down its spine and a long arm draped over its knee. A heavy brow cuts straight across a glowing eye, and its long mouth slopes down and back. Cool light catches only its upper edges.' },
+  { name: 'Obsidian Head', tag: 'A colossal head, half-sunk', draw: drawHead,
+    text: 'Just the head of something enormous, sunk into the silt. It is glassy black, with a long sloping brow, a jutting underbite and a jaw hanging slightly open. Barbels sway from the chin. The one eye smoulders a dull red under its lid.' },
+  { name: 'Robed', tag: 'A Deep One priest', draw: drawRobed,
+    text: 'A hooded figure in dark, tarnished bronze, hunched over a crooked staff. Its fish head pushes forward out of a shadowed cowl. Deep folds run down the robe, and green tarnish blooms across it.' },
+  { name: 'Relief', tag: 'Carved into a slate panel', draw: drawRelief,
+    text: 'The crouching figure again, raised in relief on a dark slate slab inside a carved border, with bands of glyphs above and below and a water stain rising up its foot. It reads as an ancient temple fragment rather than a statue.' },
+];
+
+const studies = [], icons = [];
+let hp = 3, crumble = 0, toppling = false, pause = 0;
+const main = document.getElementById('studies');
+for (const d of DESIGNS) {
+  const el = document.createElement('section');
+  el.className = 'study';
+  el.innerHTML = `<h2>${d.name}</h2><div class="tag">${d.tag}</div><canvas class="board"></canvas>
+    <div class="row"><div class="icons"><canvas></canvas><div class="pill"><canvas></canvas>3 left</div></div><p>${d.text}</p></div>`;
+  main.appendChild(el);
+  const board = el.querySelector('.board'), [big, small] = el.querySelectorAll('.icons canvas');
+  studies.push({ d, board, ctx: board.getContext('2d'), cs: 0, W: 0, H: 0 });
+  icons.push({ d, canvas: big, size: 96, intro: true }, { d, canvas: small, size: 26 });
+}
+document.querySelectorAll('[data-hp]').forEach(b => b.addEventListener('click', () => {
+  const v = +b.dataset.hp;
+  hp = v || 1; crumble = 0; pause = 0; toppling = v === 0;
+}));
+
+function resize() {
+  for (const st of studies) {
+    const w = st.board.clientWidth;
+    st.cs = (w - PAD * 2) / COLS;
+    st.W = w; st.H = st.cs * ROWS + PAD * 2;
+    st.board.style.height = st.H + 'px';
+    st.board.width = Math.round(w * dpr); st.board.height = Math.round(st.H * dpr);
+  }
+  for (const ic of icons) {
+    ic.canvas.style.width = ic.canvas.style.height = ic.size + 'px';
+    ic.canvas.width = ic.canvas.height = Math.round(ic.size * dpr);
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+function idolAt(c, d, x, y, size, now, h, k = 0) {
+  c.save();
+  c.globalAlpha = 1 - k;
+  c.translate(x, y + k * size * .3);
+  d.draw(c, size * .5 * (1 - k * .3), now, h);
+  c.restore();
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(50, now - last); last = now;
+  if (toppling) {
+    // it falls, then stands back up after a pause so the designs can be compared again
+    if (crumble < 1) crumble = Math.min(1, crumble + dt / 700);
+    else if ((pause += dt) > 1400) { toppling = false; hp = 3; crumble = 0; pause = 0; }
+  }
+  for (const st of studies) {
+    const c = st.ctx;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, st.W, st.H);
+    drawBoard(c, st.cs, st.W, st.H);
+    c.save();
+    c.beginPath(); c.rect(PAD, PAD, st.cs * COLS, st.cs * ROWS); c.clip();
+    drawWater(c, st.cs, now);
+    if (crumble < 1) idolAt(c, st.d, PAD + (IDOL[1] + .5) * st.cs, PAD + (IDOL[0] + .5) * st.cs, st.cs, now, Math.max(1, hp), toppling ? crumble : 0);
+    c.restore();
+  }
+  for (const ic of icons) {
+    const c = ic.canvas.getContext('2d'), s = ic.size;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, s, s);
+    if (ic.intro) {
+      c.fillStyle = 'rgba(30,110,110,.5)'; c.fillRect(0, s * .74, s, s * .26);
+      idolAt(c, ic.d, s / 2, s / 2, s * .8, now, 3);
+      c.fillStyle = 'rgba(20,90,95,.45)'; c.fillRect(0, s * .74, s, s * .26);
+    } else idolAt(c, ic.d, s / 2, s / 2, s * 1.05, now, 3);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

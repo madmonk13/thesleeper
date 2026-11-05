@@ -18,6 +18,7 @@ const GLOW = { ley: '#3dffb0', elder: '#ffb84d', wisp: '#aaffd8', taint: '#b44df
 const POINTS_PER_PIECE = 40;
 const CLEANSE_BONUS = 100;
 const SHOG_BONUS = 100;
+const IDOL_HP = 3, IDOL_BONUS = 500, DRAIN_BONUS = 60, FLOOD_PATIENCE = 3;
 const WITCH_STRIKE = 110; // ms from a witch-light firing to its bolt landing
 const TAINT_PATIENCE = 2;
 const STAR_THRESHOLDS = [1, 1.5, 2];
@@ -25,12 +26,15 @@ const DIRS = [[0, 1], [1, 0], [0, -1], [-1, 0]];
 
 function levelConfig(n) {
   const goals = [{ type: 'score', target: 1500 + n * 1000 }];
-  let taint = 0, shoggoth = 0;
+  let taint = 0, shoggoth = 0, idol = false;
   if (n % 3 === 0) {
     taint = Math.min(18, 4 + n);
   } else if (n >= 5 && n % 3 === 2) {
     // every third level from 5 (5, 8, 11…) a shoggoth engulfs part of the board
     shoggoth = Math.min(24, 6 + n);
+  } else if (n >= 10 && n % 3 === 1) {
+    // every third level from 10 (10, 13, 16…) a Dagon idol floods the board
+    idol = true;
   } else if (n >= 2) {
     const count = Math.min(25, 8 + Math.floor(n * 1.5));
     const first = (n * 2) % NC;
@@ -40,7 +44,8 @@ function levelConfig(n) {
   }
   if (taint) goals.push({ type: 'cleanse' });
   if (shoggoth) goals.push({ type: 'free' });
-  return { moves: Math.max(16, 22 - Math.floor(n / 2)), goals, taint, shoggoth };
+  if (idol) goals.push({ type: 'idol' }, { type: 'drain' });
+  return { moves: Math.max(16, 22 - Math.floor(n / 2)), goals, taint, shoggoth, idol };
 }
 
 // ---------- DOM ----------
@@ -51,7 +56,7 @@ const fg = $('fg'), fctx = fg.getContext('2d'); // eye layer, drawn over the boa
 const overlay = $('overlay');
 
 // ---------- State ----------
-let grid = [], taint = [], taintFill = [], shog = [], shogFill = [], level = 1, score = 0, movesLeft = 0, cfg = null, collected = [];
+let grid = [], taint = [], taintFill = [], shog = [], shogFill = [], flood = [], floodFill = [], idol = null, level = 1, score = 0, movesLeft = 0, cfg = null, collected = [];
 let state = 'menu', busy = false, selected = null, drag = null, hint = null;
 let lastInput = 0, muted = false, cleansedThisMove = 0, idleTurns = 0;
 let particles = [], fx = [], floats = [], banner = null, shake = null;
@@ -200,8 +205,8 @@ function matchSound(cascade) {
 
 // ---------- Board logic ----------
 function findRuns() {
-  // stones engulfed by a shoggoth never match
-  const at = (r, c) => shogAt(r, c) ? null : grid[r][c];
+  // stones engulfed, under water or beneath the idol never match
+  const at = (r, c) => lockedAt(r, c) ? null : grid[r][c];
   const runs = [];
   for (let r = 0; r < ROWS; r++) {
     let c = 0;
@@ -369,6 +374,116 @@ function freeShoggoth(r, c) {
   updateHUD();
 }
 
+// ---------- Dagon idol ----------
+// The idol stands on one cell and the sea rises around it. Stones under water are locked like
+// engulfed ones; clearing a stone beside them (or a relic) drains them. Clears beside the idol
+// crack it, and IDOL_HP blows topple it. While it stands, FLOOD_PATIENCE turns in a row without
+// draining makes the water flood every dry neighbour at once.
+const floodAt = (r, c) => !!(flood[r] && flood[r][c]);
+const idolAt = (r, c) => !!(idol && idol.hp > 0 && idol.r === r && idol.c === c);
+const floodCount = () => flood.reduce((s, row) => s + row.filter(Boolean).length, 0);
+const idolHp = () => idol ? idol.hp : 0;
+const lockedAt = (r, c) => shogAt(r, c) || floodAt(r, c) || idolAt(r, c);
+let drainedThisMove = 0, floodIdle = 0;
+
+function seedIdol(on) {
+  flood = Array.from({ length: ROWS }, () => new Array(COLS).fill(false));
+  floodFill = Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
+  idol = null; floodIdle = 0;
+  if (!on) return;
+  let r, c;
+  for (let guard = 0; guard < 200; guard++) {
+    r = 2 + randInt(ROWS - 4); c = 1 + randInt(COLS - 2);
+    if (!taint[r][c] && !shogAt(r, c)) break;
+  }
+  idol = { r, c, hp: IDOL_HP, shown: -.4, hit: 0, crumble: 0 };
+  for (const [dr, dc] of DIRS) {
+    const r2 = r + dr, c2 = c + dc;
+    if (inBounds(r2, c2) && !taint[r2][c2] && !shogAt(r2, c2)) { flood[r2][c2] = true; floodFill[r2][c2] = -.3 - Math.random() * .5; }
+  }
+}
+
+function strikeLocked(r, c) {
+  if (shogAt(r, c)) freeShoggoth(r, c);
+  else if (floodAt(r, c)) drainFlood(r, c);
+  else if (idolAt(r, c)) hitIdol();
+}
+
+function drainFlood(r, c) {
+  if (!flood[r][c]) return;
+  flood[r][c] = false;
+  drainedThisMove++;
+  score += DRAIN_BONUS;
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + (Math.random() - .5) * 2.2, sp = .08 + Math.random() * .14;
+    particles.push({
+      x: c + .2 + Math.random() * .6, y: r + .6, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      life: 0, max: 600, color: i % 3 ? '#4fa89e' : '#bdf3ea', size: .025 + Math.random() * .035, rot: 0, spin: 0, drop: true,
+    });
+  }
+  // a splash and a gurgle
+  noise(.3, 900, .06, 1.5, 0, 'bandpass', .02);
+  beep(420, .18, 'sine', .03);
+  beep(620, .12, 'sine', .02, .07);
+  updateHUD();
+}
+
+function hitIdol() {
+  if (!idol || idol.hp <= 0) return;
+  idol.hp--;
+  idol.hit = 1;
+  drainedThisMove++; // a blow to the idol also holds the tide back
+  const { r, c } = idol, fell = idol.hp === 0;
+  for (let i = 0; i < (fell ? 26 : 9); i++) {
+    const a = Math.random() * TAU, sp = .05 + Math.random() * (fell ? .2 : .12);
+    particles.push({
+      x: c + .5, y: r + .4, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - .08,
+      life: 0, max: 700, color: i % 4 ? '#2f3f38' : '#6f8a7d', size: .04 + Math.random() * .06,
+      rot: Math.random() * TAU, spin: (Math.random() - .5) * .03,
+    });
+  }
+  if (fell) {
+    score += IDOL_BONUS;
+    addFloat('the idol falls', c, r, '#bff3e6', .32);
+    startShake(500, 7);
+    noise(1, 180, .16, .6, 0, 'lowpass');
+    sweep(160, 40, 1, .08);
+    thunder(.4);
+  } else {
+    startShake(160, 3);
+    noise(.2, 2200, .08, 1.2);
+    beep(65, .5, 'triangle', .1);
+  }
+  updateHUD();
+}
+
+async function spreadFlood() {
+  if (!idol || idol.hp <= 0) return;
+  const targets = new Map(); // key -> distance from the idol, so the water spills outward
+  const wet = (r, c) => floodAt(r, c) || idolAt(r, c);
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (wet(r, c))
+        for (const [dr, dc] of DIRS) {
+          const r2 = r + dr, c2 = c + dc;
+          if (inBounds(r2, c2) && !lockedAt(r2, c2) && !taint[r2][c2]) targets.set(key(r2, c2), Math.hypot(r2 - idol.r, c2 - idol.c));
+        }
+  if (!targets.size) return;
+  const near = Math.min(...targets.values());
+  for (const [k, d] of targets) {
+    const r = Math.floor(k / COLS), c = k % COLS;
+    flood[r][c] = true;
+    floodFill[r][c] = -(d - near) * .35;
+  }
+  addFloat('the waters rise', idol.c, idol.r, '#9fe3d6', .3);
+  startShake(400, 2);
+  // a wave rolling in over a low swell
+  noise(1.4, 420, .12, .5, 0, 'lowpass', .5);
+  beep(49, 2.6, 'sine', .12, 0, .5);
+  beep(98, 2.2, 'sine', .05, .15, .5);
+  await wait(900);
+}
+
 // A tendril reaches from an existing blob into a neighbouring cell, then a new blob
 // swells there with a wet splat.
 const TENDRIL_REACH = 520;
@@ -378,7 +493,7 @@ async function spreadTaint() {
     for (let c = 0; c < COLS; c++)
       if (taint[r][c])
         for (const [dr, dc] of DIRS)
-          if (inBounds(r + dr, c + dc) && !taint[r + dr][c + dc] && !shogAt(r + dr, c + dc)) options.push([r, c, r + dr, c + dc]);
+          if (inBounds(r + dr, c + dc) && !taint[r + dr][c + dc] && !lockedAt(r + dr, c + dc)) options.push([r, c, r + dr, c + dc]);
   if (!options.length) return;
   const [r0, c0, r, c] = options[randInt(options.length)];
   addFx({ type: 'tendril', r0, c0, r1: r, c1: c, dur: TENDRIL_REACH + 250 });
@@ -404,22 +519,25 @@ async function spreadTaint() {
 }
 
 // ---------- Effects of special pieces ----------
-// Witch-lights seek taint first, then a shoggoth, then stones still needed for a goal, then anything.
+// Witch-lights seek taint first, then the idol, then water, then a shoggoth, then stones still
+// needed for a goal, then anything.
 // `prefer` keeps the choice stable between the preview and the real strike while it's still valid.
 function pickDartTarget(taken, prefer) {
   const want = new Set(cfg.goals
     .filter(g => g.type === 'collect' && collected[g.color] < g.count)
     .map(g => g.color));
-  const pool = [], goalPool = [], taintPool = [], shogPool = [];
+  const pool = [], goalPool = [], taintPool = [], shogPool = [], idolPool = [], floodPool = [];
   forEachPiece((q, r, c) => {
     const k = key(r, c);
     if (taken.has(k)) return;
     pool.push(k);
     if (taint[r][c]) taintPool.push(k);
-    if (shogAt(r, c)) shogPool.push(k);
+    if (idolAt(r, c)) idolPool.push(k);
+    else if (floodAt(r, c)) floodPool.push(k);
+    else if (shogAt(r, c)) shogPool.push(k);
     else if (want.has(q.color)) goalPool.push(k);
   });
-  const from = taintPool.length ? taintPool : shogPool.length ? shogPool : goalPool.length ? goalPool : pool;
+  const from = [taintPool, idolPool, floodPool, shogPool, goalPool, pool].find(x => x.length) || [];
   if (prefer != null && from.includes(prefer)) return prefer;
   return from.length ? from[randInt(from.length)] : null;
 }
@@ -457,7 +575,7 @@ function effectCells(r, c, p, cleared, queued, hitDelay) {
       taken.add(t);
       out.push(t);
       const tr = Math.floor(t / COLS), tc = t % COLS, target = grid[tr][tc];
-      if (p.carry && target.special !== 'rainbow' && !shogAt(tr, tc)) target.special = p.carry;
+      if (p.carry && target.special !== 'rainbow' && !lockedAt(tr, tc)) target.special = p.carry;
       hitDelay.set(t, fxDelay + WITCH_STRIKE + i * 70);
       witchBolt(tr, tc, fxDelay + i * 70);
     }
@@ -504,14 +622,15 @@ function effectCells(r, c, p, cleared, queued, hitDelay) {
 
 async function clearCells(keys, cascade = 1, creates = []) {
   // hitDelay: ms before a cell clears, so pieces hit by a witch-light wait for it to land.
-  // freed: shoggoth cells driven off (key -> delay). The stone beneath stays.
+  // freed: locked cells struck (key -> delay): a shoggoth driven off, water drained or the
+  // idol cracked. The stone beneath stays.
   const queue = [...keys], cleared = new Set(), hitDelay = new Map(), freed = new Map();
   while (queue.length) {
     const k = queue.shift();
     if (cleared.has(k)) continue;
     const r = Math.floor(k / COLS), c = k % COLS, p = grid[r][c];
     if (!p) continue;
-    if (shogAt(r, c)) { if (!freed.has(k)) freed.set(k, hitDelay.get(k) || 0); continue; }
+    if (lockedAt(r, c)) { if (!freed.has(k)) freed.set(k, hitDelay.get(k) || 0); continue; }
     cleared.add(k);
     if (p.special) {
       fxDelay = hitDelay.get(k) || 0;
@@ -523,11 +642,11 @@ async function clearCells(keys, cascade = 1, creates = []) {
       fxDelay = 0;
     }
   }
-  // a shoggoth recoils from any stone cleared beside it
+  // a shoggoth recoils, water drains and the idol cracks beside any stone cleared
   for (const k of cleared) {
     const r = Math.floor(k / COLS), c = k % COLS, d = hitDelay.get(k) || 0;
     for (const [dr, dc] of DIRS) {
-      if (!shogAt(r + dr, c + dc)) continue;
+      if (!lockedAt(r + dr, c + dc)) continue;
       const k2 = key(r + dr, c + dc);
       if (!freed.has(k2) || freed.get(k2) > d) freed.set(k2, d);
     }
@@ -564,7 +683,7 @@ async function clearCells(keys, cascade = 1, creates = []) {
     anims.push(d ? wait(d).then(pop) : pop());
   }
   for (const [k, d] of freed) {
-    const free = () => freeShoggoth(Math.floor(k / COLS), k % COLS);
+    const free = () => strikeLocked(Math.floor(k / COLS), k % COLS);
     if (d) anims.push(wait(d).then(free)); else free();
   }
   if (cleared.size) {
@@ -591,9 +710,9 @@ async function clearCells(keys, cascade = 1, creates = []) {
 async function applyGravity() {
   const anims = [];
   for (let c = 0; c < COLS; c++) {
-    // engulfed stones hold their place; the rest fall past behind the shoggoth
+    // locked stones hold their place; the rest fall past behind them
     const free = [];
-    for (let r = ROWS - 1; r >= 0; r--) if (!shogAt(r, c)) free.push(r);
+    for (let r = ROWS - 1; r >= 0; r--) if (!lockedAt(r, c)) free.push(r);
     let w = 0;
     for (const r of free) {
       if (!grid[r][c]) continue;
@@ -639,22 +758,25 @@ function swapGrid(a, b) {
 const isCombo = (p, q) => p.special === 'rainbow' || q.special === 'rainbow' || (p.special && q.special);
 
 function findMove() {
+  let relicMove = null;
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       for (const [dr, dc] of [[0, 1], [1, 0]]) {
         const r2 = r + dr, c2 = c + dc;
         if (!inBounds(r2, c2)) continue;
         const a = grid[r][c], b = grid[r2][c2];
-        if (!a || !b || shogAt(r, c) || shogAt(r2, c2)) continue;
+        if (!a || !b || lockedAt(r, c) || lockedAt(r2, c2)) continue;
         if (isCombo(a, b)) return [{ r, c }, { r: r2, c: c2 }];
         swapGrid({ r, c }, { r: r2, c: c2 });
         const ok = findRuns().length > 0;
         swapGrid({ r, c }, { r: r2, c: c2 });
         if (ok) return [{ r, c }, { r: r2, c: c2 }];
+        // a relic goes off whenever it is swapped, so it is always a move; hint matches first
+        if (!relicMove && (a.special || b.special)) relicMove = [{ r, c }, { r: r2, c: c2 }];
       }
     }
   }
-  return null;
+  return relicMove;
 }
 
 async function doCombo(p1, c1, p2, c2) {
@@ -736,8 +858,8 @@ async function doCombo(p1, c1, p2, c2) {
 async function trySwap(a, b) {
   if (busy || state !== 'playing') return;
   if (!inBounds(b.r, b.c) || Math.abs(a.r - b.r) + Math.abs(a.c - b.c) !== 1) return;
-  if (shogAt(a.r, a.c) || shogAt(b.r, b.c)) return;
-  busy = true; selected = null; hint = null; cleansedThisMove = 0; freedThisMove = 0;
+  if (lockedAt(a.r, a.c) || lockedAt(b.r, b.c)) return;
+  busy = true; selected = null; hint = null; cleansedThisMove = 0; freedThisMove = 0; drainedThisMove = 0;
   const pA = grid[a.r][a.c], pB = grid[b.r][b.c];
   swapGrid(a, b);
   noise(0.1, 500, 0.05, 1.2);
@@ -754,6 +876,12 @@ async function trySwap(a, b) {
     movesLeft--; updateHUD();
     await doCombo(pA, b, pB, a);
     await resolveBoard();
+  } else if (pA.special || pB.special) {
+    // a relic takes effect whenever it is swapped, matched or not
+    movesLeft--; updateHUD();
+    const at = pA.special ? b : a, k = key(at.r, at.c);
+    if (findRuns().some(run => run.cells.some(([r, c]) => key(r, c) === k))) await resolveBoard([b, a]);
+    else { await clearCells([k]); await applyGravity(); await resolveBoard(); }
   } else if (findRuns().length) {
     movesLeft--; updateHUD();
     await resolveBoard([b, a]);
@@ -779,6 +907,8 @@ function goalsMet() {
     g.type === 'score' ? score >= g.target :
     g.type === 'collect' ? collected[g.color] >= g.count :
     g.type === 'free' ? shogCount() === 0 :
+    g.type === 'idol' ? idolHp() === 0 :
+    g.type === 'drain' ? floodCount() === 0 :
     taintCount() === 0);
 }
 
@@ -805,11 +935,15 @@ async function afterMove() {
     const missing = cfg.goals.filter(g =>
       g.type === 'score' ? score < g.target :
       g.type === 'collect' ? collected[g.color] < g.count :
-      g.type === 'free' ? shogCount() > 0 : taintCount() > 0);
+      g.type === 'free' ? shogCount() > 0 :
+      g.type === 'idol' ? idolHp() > 0 :
+      g.type === 'drain' ? floodCount() > 0 : taintCount() > 0);
     const text = missing.map(g =>
       g.type === 'score' ? `${(g.target - score).toLocaleString()} warding short` :
       g.type === 'collect' ? `${g.count - collected[g.color]} more stones needed` :
       g.type === 'free' ? `${shogCount()} stones still engulfed` :
+      g.type === 'idol' ? 'the idol still stands' :
+      g.type === 'drain' ? `${floodCount()} stones still under water` :
       `${taintCount()} tainted tiles remain`).join(' · ');
     showOverlay('The Sleeper wakes', text, null, 'Try the rite again', () => startLevel(level), true);
   } else {
@@ -818,6 +952,12 @@ async function afterMove() {
     if (hasCleanseGoal() && idleTurns >= TAINT_PATIENCE && taintCount() > 0) {
       idleTurns = 0;
       await spreadTaint();
+      updateHUD();
+    }
+    floodIdle = drainedThisMove ? 0 : floodIdle + 1;
+    if (idolHp() > 0 && floodIdle >= FLOOD_PATIENCE) {
+      floodIdle = 0;
+      await spreadFlood();
       updateHUD();
     }
     if (!findMove()) await shuffleBoard();
@@ -855,9 +995,9 @@ async function finale() {
 async function shuffleBoard() {
   showBanner('The ruins shift…');
   noise(0.8, 300, 0.1, 0.6);
-  // engulfed stones stay put; only the free cells are shuffled
+  // locked stones stay put; only the free cells are shuffled
   const pieces = [], spots = [];
-  forEachPiece((p, r, c) => { if (!shogAt(r, c)) { pieces.push(p); spots.push([r, c]); } });
+  forEachPiece((p, r, c) => { if (!lockedAt(r, c)) { pieces.push(p); spots.push([r, c]); } });
   for (let tries = 0; tries < 200; tries++) {
     for (let i = pieces.length - 1; i > 0; i--) {
       const j = randInt(i + 1);
@@ -917,6 +1057,10 @@ const INTROS = {
     piece: [3, null], title: 'The Shoggoth', shog: true,
     text: 'A shoggoth has engulfed these stones. They can\'t be moved or matched while it holds them. Clear a stone beside it, or strike it with a relic, to drive it off.',
   },
+  idol: {
+    piece: [0, null], title: 'The Dagon Idol', idol: true,
+    text: 'A Dagon idol stands in the ruins, and the sea rises around it. Stones under water can\'t be moved or matched. Clear a stone beside them, or strike them with a relic, to drain them. Three blows beside the idol topple it. While it stands, three turns without draining and the flood rises.',
+  },
   taint: {
     piece: [1, null], title: 'The Taint', blob: true,
     text: 'A living taint clings to some stones. Clear a stone resting on it to purge it. Go two turns without purging any, and it spreads.',
@@ -947,9 +1091,10 @@ async function showIntro(k) {
   $('introTitle').textContent = it.title;
   $('introTitle').classList.toggle('taint', !!it.blob);
   $('introTitle').classList.toggle('shog', !!it.shog);
+  $('introTitle').classList.toggle('idol', !!it.idol);
   $('introText').textContent = it.text;
   $('introTip').textContent = tip ? COMBO_TIP : '';
-  introOpen = { blob: it.blob, shog: it.shog, iconSize: it.iconSize || .62, piece: makePiece(it.piece[0], it.piece[1], 0, 0) };
+  introOpen = { blob: it.blob, shog: it.shog, idol: it.idol, iconSize: it.iconSize || .62, piece: makePiece(it.piece[0], it.piece[1], 0, 0) };
   $('intro').classList.remove('hidden');
   beep(330, 1, 'sine', .06); beep(494, 1, 'sine', .04, .12); beep(659, 1.2, 'sine', .03, .24);
   await new Promise(res => { introResolve = res; });
@@ -973,6 +1118,7 @@ function drawIntroIcon(now) {
   const ic = $('introIcon'), s = ic.width, c = ic.getContext('2d');
   c.setTransform(1, 0, 0, 1, 0, 0);
   c.clearRect(0, 0, s, s);
+  if (introOpen.idol) { drawIdolIntro(c, s, now); return; }
   if (introOpen.blob) drawBlob(c, s / 2, s / 2, s * .36, now, 3);
   drawPiece(c, introOpen.piece, s / 2, s / 2, s * introOpen.iconSize, now, 1);
   if (introOpen.shog) drawShoggothIcon(c, s / 2, s / 2, s * .72, now);
@@ -990,6 +1136,7 @@ async function startLevel(n) {
   selected = null; hint = null; drag = null; idleTurns = 0; pendingIntros = [];
   seedTaint(cfg.taint);
   seedShoggoth(cfg.shoggoth);
+  seedIdol(cfg.idol);
   generateBoard();
   buildGoals();
   state = 'playing';
@@ -1004,6 +1151,7 @@ async function startLevel(n) {
   await Promise.all(anims);
   if (cfg.taint && !seenIntros.has('taint')) { await wait(700); await showIntro('taint'); }
   if (cfg.shoggoth && !seenIntros.has('shog')) { await wait(700); await showIntro('shog'); }
+  if (cfg.idol && !seenIntros.has('idol')) { await wait(700); await showIntro('idol'); }
   busy = false;
   lastInput = performance.now();
 }
@@ -1035,6 +1183,8 @@ function buildGoals() {
       el.appendChild(iconCanvas((ic, s) => g.type === 'collect'
         ? drawPiece(ic, makePiece(g.color, null, 0, 0), s / 2, s / 2, s * 1.15, 0, 1)
         : g.type === 'free' ? drawShoggothIcon(ic, s / 2, s / 2, s * .9, 0)
+        : g.type === 'idol' ? drawIdol(ic, s / 2, s / 2, s * 1.05, 0, IDOL_HP, 0, 1, false)
+        : g.type === 'drain' ? drawWaterIcon(ic, s / 2, s / 2, s * .9)
         : drawBlob(ic, s / 2, s / 2, s * .36, 0, 7)));
       const sp = document.createElement('span');
       sp.className = 'count';
@@ -1062,7 +1212,7 @@ function updateHUD() {
       el.querySelector('.count').textContent = `${Math.min(collected[g.color], g.count)}/${g.count}`;
       el.classList.toggle('done', collected[g.color] >= g.count);
     } else {
-      const n = g.type === 'free' ? shogCount() : taintCount();
+      const n = g.type === 'free' ? shogCount() : g.type === 'idol' ? idolHp() : g.type === 'drain' ? floodCount() : taintCount();
       el.querySelector('.count').textContent = n ? `${n} left` : '';
       el.classList.toggle('done', n === 0);
     }
@@ -1195,7 +1345,7 @@ function strikeArm(i) {
   // stones near this impact are flung away from it
   const hc = (hx * boardW - PAD) / cell - .5, hr = (hy * boardH - PAD) / cell - .5;
   forEachPiece(p => {
-    if (p.fly || shogAt(Math.round(p.y), Math.round(p.x))) return; // engulfed stones sink with the board
+    if (p.fly || lockedAt(Math.round(p.y), Math.round(p.x))) return; // locked stones sink with the board
     const dx = p.x - hc, dy = p.y - hr, d = Math.hypot(dx, dy);
     if (d > 3.2) return; // the rest go down with the board
     const k = .012 + Math.random() * .012 + .02 / (d + 1);
@@ -1449,6 +1599,340 @@ function drawShoggothLayer(now) {
 // A single mass, for the goal counter and the intro card.
 function drawShoggothIcon(c, cx, cy, size, now) {
   drawCongeries(c, [{ r: 0, c: 0, l: 1, k: 5, x: cx, y: cy }], (r, col) => r === 0 && col === 0 ? 1 : 0, size * .85, now || 1800);
+}
+
+// ---------- Rendering: Dagon idol and flood ----------
+// Murky sea water filling each flooded cell from the bottom up. The stones show dimly through,
+// caustic light wavers across it and a rippling surface marks the waterline.
+const floodLevel = (r, c) => inBounds(r, c) && floodFill[r] ? Math.max(0, Math.min(1, floodFill[r][c])) : 0;
+
+function drawFloodLayer(now) {
+  const cells = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++) {
+      const l = floodLevel(r, c);
+      if (l > .02) cells.push([r, c, l]);
+    }
+  if (!cells.length) return;
+  ctx.save();
+  // one path, so neighbouring cells read as a single body of water
+  ctx.beginPath();
+  for (const [r, c, l] of cells) ctx.rect(PAD + c * cell, PAD + (r + 1 - l) * cell, cell, cell * l);
+  const g = ctx.createLinearGradient(0, PAD, 0, PAD + ROWS * cell);
+  g.addColorStop(0, 'rgba(38,118,116,.58)'); g.addColorStop(1, 'rgba(8,48,58,.7)');
+  ctx.fillStyle = g; ctx.fill();
+  ctx.save(); ctx.clip();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineWidth = Math.max(1, cell * .045); ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(120,230,215,.09)';
+  const W = COLS * cell, H = ROWS * cell;
+  for (let i = 0; i < 9; i++) {
+    ctx.beginPath();
+    for (let j = 0; j <= 24; j++) {
+      const u = j / 24, x = PAD + u * W;
+      const y = PAD + (i - .5) / 8 * H + Math.sin(u * 7 + now / 900 + i * 1.7) * cell * .22 + Math.sin(u * 13 - now / 1300 + i) * cell * .08;
+      j ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+  }
+  for (let i = 0; i < 7; i++) {
+    ctx.beginPath();
+    for (let j = 0; j <= 24; j++) {
+      const u = j / 24, y = PAD + u * H;
+      const x = PAD + (i - .5) / 6 * W + Math.sin(u * 9 - now / 1100 + i * 2.3) * cell * .2;
+      j ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+  }
+  // bubbles rising from the stones
+  ctx.strokeStyle = 'rgba(190,245,235,.4)'; ctx.lineWidth = 1;
+  for (const [r, c, l] of cells) {
+    for (let i = 0; i < 2; i++) {
+      const s = key(r, c) * 7 + i * 3, P = 1800 + hash(s) * 1600, ph = ((now + hash(s + 1) * P) % P) / P;
+      const bx = PAD + (c + .2 + .6 * hash(s + 2) + Math.sin(ph * 9 + s) * .04) * cell, by = PAD + (r + 1 - ph * l) * cell;
+      ctx.globalAlpha = (1 - ph) * l;
+      ctx.beginPath(); ctx.arc(bx, by, cell * (.02 + .02 * hash(s + 3)), 0, TAU); ctx.stroke();
+    }
+  }
+  ctx.restore();
+  // the waterline wherever the cell above isn't full
+  ctx.strokeStyle = 'rgba(175,245,235,.5)'; ctx.lineWidth = Math.max(1, cell * .03);
+  ctx.beginPath();
+  for (const [r, c, l] of cells) {
+    if (floodLevel(r - 1, c) > .98 && l > .98) continue;
+    const y0 = PAD + (r + 1 - l) * cell;
+    for (let j = 0; j <= 8; j++) {
+      const x = PAD + (c + j / 8) * cell, y = y0 + Math.sin(j / 8 * TAU + now / 350 + c * 2) * cell * .025;
+      j ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+// A hunched figure of wet black basalt, crouched in profile on a plinth, facing left. Lit from
+// the upper left: carved lines are dark grooves with a pale lip, and a faint rim of light picks
+// out the upper edges so the dark stone still reads. Helpers are scoped here so their short
+// names stay out of the rest of the game.
+const basaltIdol = (() => {
+  // Everything is lit from the upper left. Carved lines are a dark groove with a pale lower-right
+  // lip; hollows are dark inside with light catching their lower rim. No outlines anywhere.
+  const P = (s, pts) => pts.map(([x, y]) => [x * s, y * s]);
+  function poly(c, pts) { c.beginPath(); pts.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y)); }
+
+  function shade(c, path, s, light, mid, dark) {
+    path();
+    const g = c.createLinearGradient(-s * .6, -s * .9, s * .6, s * .9);
+    g.addColorStop(0, light); g.addColorStop(.45, mid); g.addColorStop(1, dark);
+    c.fillStyle = g; c.fill();
+    c.save(); path(); c.clip();
+    const h = c.createRadialGradient(-s * .3, -s * .55, 0, -s * .3, -s * .55, s * .9);
+    h.addColorStop(0, 'rgba(255,255,255,.2)'); h.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = h; c.fillRect(-s, -s * 1.1, s * 2, s * 2.2);
+    const ao = c.createLinearGradient(0, s * .1, 0, s * .9);
+    ao.addColorStop(0, 'rgba(0,0,0,0)'); ao.addColorStop(1, 'rgba(0,0,0,.35)');
+    c.fillStyle = ao; c.fillRect(-s, -s * 1.1, s * 2, s * 2.2);
+    c.restore();
+  }
+
+  function groove(c, pts, w, depth = .42, lip = .18) {
+    c.lineCap = 'round'; c.lineJoin = 'round';
+    poly(c, pts); c.strokeStyle = `rgba(0,0,0,${depth})`; c.lineWidth = w; c.stroke();
+    c.save(); c.translate(w * .45, w * .45);
+    poly(c, pts); c.strokeStyle = `rgba(255,255,255,${lip})`; c.lineWidth = w * .5; c.stroke();
+    c.restore();
+  }
+  function curveGroove(c, x0, y0, cx, cy, x1, y1, w, depth = .42, lip = .18) {
+    c.lineCap = 'round';
+    c.beginPath(); c.moveTo(x0, y0); c.quadraticCurveTo(cx, cy, x1, y1);
+    c.strokeStyle = `rgba(0,0,0,${depth})`; c.lineWidth = w; c.stroke();
+    c.beginPath(); c.moveTo(x0 + w * .45, y0 + w * .45); c.quadraticCurveTo(cx + w * .45, cy + w * .45, x1 + w * .45, y1 + w * .45);
+    c.strokeStyle = `rgba(255,255,255,${lip})`; c.lineWidth = w * .5; c.stroke();
+  }
+  function hollow(c, x, y, rx, ry, depth = .6) {
+    const g = c.createRadialGradient(x - rx * .25, y - ry * .3, 0, x, y, Math.max(rx, ry));
+    g.addColorStop(0, `rgba(0,0,0,${depth})`); g.addColorStop(.75, `rgba(0,0,0,${depth * .6})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.beginPath(); c.ellipse(x, y, rx, ry, 0, 0, TAU); c.fillStyle = g; c.fill();
+    c.beginPath(); c.ellipse(x, y, rx * .95, ry * .95, 0, -.3, 1.9);
+    c.strokeStyle = 'rgba(255,255,255,.2)'; c.lineWidth = Math.max(.6, rx * .14); c.stroke();
+  }
+  function ember(c, x, y, r, now, col) {
+    const k = .6 + .25 * Math.sin(now / 700 + x);
+    c.save(); c.globalCompositeOperation = 'lighter';
+    const g = c.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${col},${.9 * k})`); g.addColorStop(.35, `rgba(${col},${.35 * k})`); g.addColorStop(1, `rgba(${col},0)`);
+    c.fillStyle = g; c.fillRect(x - r, y - r, r * 2, r * 2);
+    c.restore();
+  }
+  function speckle(c, s, n, seed, x0, x1, y0, y1) {
+    for (let i = 0; i < n; i++) {
+      const h = seed * 31 + i * 7, x = (x0 + (x1 - x0) * hash(h)) * s, y = (y0 + (y1 - y0) * hash(h + 1)) * s, r = s * (.008 + .02 * hash(h + 2));
+      c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = hash(h + 3) > .5 ? 'rgba(0,0,0,.16)' : 'rgba(255,255,255,.1)'; c.fill();
+    }
+  }
+  function drips(c, s, now, xs, y0, len, col) {
+    const a0 = c.globalAlpha;
+    xs.forEach((x, i) => {
+      const ph = (now / 1500 + i * .37) % 1;
+      c.globalAlpha = a0 * (1 - ph) * .75;
+      c.beginPath(); c.ellipse(x * s, y0 * s + ph * len * s, s * .022, s * .034, 0, 0, TAU); c.fillStyle = col; c.fill();
+    });
+    c.globalAlpha = a0;
+  }
+  const CRACKS = [
+    [[-.12, -.8], [-.03, -.62], [-.15, -.46], [-.05, -.28], [-.17, -.06]],
+    [[.2, -.04], [.09, .14], [.23, .32], [.1, .56]],
+  ];
+  function cracks(c, s, hp, glow) {
+    for (let i = 0; i < Math.min(2, 3 - hp); i++) {
+      const pts = P(s, CRACKS[i]);
+      if (glow) {
+        c.save(); c.globalCompositeOperation = 'lighter';
+        poly(c, pts); c.strokeStyle = 'rgba(160,255,210,.35)'; c.lineWidth = s * .09; c.lineCap = 'round'; c.stroke();
+        poly(c, pts); c.strokeStyle = 'rgba(230,255,240,.9)'; c.lineWidth = s * .025; c.stroke();
+        c.restore();
+      } else groove(c, pts, Math.max(1.2, s * .05), .75, .28);
+    }
+  }
+  function groundShadow(c, s, w = .7) {
+    c.beginPath(); c.ellipse(0, s * .86, s * w, s * .12, 0, 0, TAU);
+    const g = c.createRadialGradient(0, s * .86, 0, 0, s * .86, s * w);
+    g.addColorStop(0, 'rgba(0,0,0,.5)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = g; c.fill();
+  }
+
+  let c_ = null; // the context the path builders draw into
+  // Every idol faces left. A rim of light catches the upper-left edges so dark stone still reads.
+  function rim(c, path, s, col, w = .035) {
+    c.save(); path(); c.clip();
+    c.translate(s * w * .6, s * w * .6); path();
+    c.strokeStyle = col; c.lineWidth = s * w; c.stroke();
+    c.restore();
+  }
+  function form(c, path, s, m) { shade(c, path, s, m.light, m.mid, m.dark); rim(c, path, s, m.rim); }
+  // a lidless fish eye under a heavy brow: the lid cuts straight across, so it glowers
+  function glower(c, x, y, r, now, m) {
+    hollow(c, x, y, r * 1.45, r * 1.25, .7);
+    const g = c.createRadialGradient(x - r * .3, y - r * .3, 0, x, y, r);
+    g.addColorStop(0, '#34403b'); g.addColorStop(1, '#030504');
+    c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = g; c.fill();
+    ember(c, x + r * .1, y + r * .15, r * 1.2, now, m.eye);
+    c.save(); c.beginPath(); c.arc(x, y, r * 1.05, 0, TAU); c.clip();
+    c.beginPath(); c.moveTo(x - r * 1.3, y - r * .05); c.lineTo(x + r * 1.3, y - r * .45); c.lineTo(x + r * 1.3, y - r * 1.4); c.lineTo(x - r * 1.3, y - r * 1.4); c.closePath();
+    c.fillStyle = m.mid; c.fill();
+    c.restore();
+    curveGroove(c, x - r * 1.4, y + r * .02, x, y - r * .3, x + r * 1.4, y - r * .5, Math.max(.8, r * .3), .55, .14);
+  }
+  function tendril(c, x, y, len, sway, w, col, now, seed) {
+    // a tapering hanging barbel or finger
+    const N = 8;
+    let px = x, py = y;
+    for (let i = 0; i < N; i++) {
+      const f = (i + 1) / N;
+      const nx = x + Math.sin(f * 2 + now / 1300 + seed) * sway * f, ny = y + len * f;
+      c.beginPath(); c.moveTo(px, py); c.lineTo(nx, ny);
+      c.strokeStyle = col; c.lineWidth = Math.max(.5, w * (1 - f * .8)); c.lineCap = 'round'; c.stroke();
+      px = nx; py = ny;
+    }
+  }
+
+  // ---------- A. Basalt crouch ----------
+  const crouchSide = s => () => {
+    const c = c_;
+    c.beginPath();
+    c.moveTo(-.52 * s, .82 * s);
+    c.lineTo(.56 * s, .82 * s);
+    c.bezierCurveTo(.7 * s, .5 * s, .66 * s, 0, .42 * s, -.32 * s);
+    c.bezierCurveTo(.3 * s, -.5 * s, .18 * s, -.56 * s, .08 * s, -.6 * s);
+    c.bezierCurveTo(-.05 * s, -.86 * s, -.42 * s, -.74 * s, -.64 * s, -.44 * s);
+    c.lineTo(-.62 * s, -.36 * s);
+    c.bezierCurveTo(-.5 * s, -.26 * s, -.36 * s, -.2 * s, -.22 * s, -.16 * s);
+    c.bezierCurveTo(-.32 * s, 0, -.52 * s, .12 * s, -.58 * s, .3 * s);
+    c.bezierCurveTo(-.6 * s, .5 * s, -.5 * s, .66 * s, -.52 * s, .82 * s);
+    c.closePath();
+  };
+  function crouchFigure(c, s, now, hp, m) {
+    c_ = c;
+    // dorsal fin down the back, behind everything
+    const fin = () => poly(c, P(s, [[.1, -.62], [.36, -.76], [.58, -.58], [.73, -.3], [.75, -.02], [.6, .05], [.44, -.3]]));
+    form(c, fin, s, m);
+    for (const [x, y] of [[.36, -.74], [.56, -.57], [.71, -.3], [.73, -.05]]) groove(c, [[.3 * s, -.42 * s], [x * s, y * s]], Math.max(.6, s * .02), .4, .1);
+    const body = crouchSide(s);
+    form(c, body, s, m);
+    // haunch and the long arm folded over the knee
+    form(c, () => { c.beginPath(); c.ellipse(.04 * s, .42 * s, .44 * s, .2 * s, -.25, 0, TAU); }, s, m);
+    const arm = () => {
+      c.beginPath();
+      c.moveTo(.12 * s, -.3 * s);
+      c.quadraticCurveTo(.32 * s, -.05 * s, .05 * s, .24 * s);
+      c.lineTo(-.4 * s, .25 * s); c.lineTo(-.43 * s, .12 * s); c.lineTo(-.02 * s, .1 * s);
+      c.quadraticCurveTo(.12 * s, -.05 * s, -.02 * s, -.26 * s);
+      c.closePath();
+    };
+    form(c, arm, s, m);
+    // webbed fingers hanging over the knee
+    for (let i = 0; i < 3; i++) tendril(c, (-.42 + i * .03) * s, .18 * s, (.24 + i * .02) * s, s * .03, s * .045, m.mid, now * .2, i);
+    c.save(); body(); c.clip();
+    glower(c, -.3 * s, -.55 * s, .075 * s, now, m);
+    // a long, grim mouth: the corner sits lower than the snout
+    curveGroove(c, -.61 * s, -.39 * s, -.47 * s, -.38 * s, -.33 * s, -.3 * s, Math.max(1, s * .04), .6, .12);
+    for (let i = 0; i < 3; i++) {
+      const x = (-.1 + i * .06) * s;
+      curveGroove(c, x, -.52 * s, x + .06 * s, -.4 * s, x, -.28 * s, Math.max(.6, s * .022), .45, .1);
+    }
+    speckle(c, s, 30, 5, -.6, .6, -.8, .8);
+    cracks(c, s, hp, false);
+    c.restore();
+    drips(c, s, now, [-.5, -.36], -.3, .5, 'rgba(160,225,215,.85)');
+  }
+  const BASALT = { light: '#5f6c65', mid: '#2e3934', dark: '#101613', rim: 'rgba(150,225,205,.16)', eye: '120,255,200' };
+  function drawBasalt(c, s, now, hp) {
+    groundShadow(c, s, .75);
+    shade(c, () => poly(c, P(s, [[-.72, .76], [.74, .76], [.76, .92], [-.74, .92]])), s, '#56605a', '#333b37', '#171c1a');
+    crouchFigure(c, s, now, hp, BASALT);
+  }
+  return drawBasalt;
+})();
+
+function drawIdol(c, cx, cy, size, now, hp, hit, alpha = 1, glow = true) {
+  const s = size * .5;
+  c.save();
+  c.globalAlpha = alpha;
+  c.translate(cx, cy);
+  // a cold blue glow behind it, slowly breathing, so the dark stone stands out on the board
+  // (left off the small icons, whose canvases would cut it square). It dims with each blow
+  // and is gone after the second, so the glow shows how near the idol is to falling.
+  const k = (.8 + .2 * Math.sin(now / 900)) * Math.max(0, hp - 1) / (IDOL_HP - 1);
+  c.save();
+  if (!glow) c.globalAlpha = 0;
+  c.globalCompositeOperation = 'lighter';
+  const gl = c.createRadialGradient(0, -s * .1, s * .15, 0, -s * .1, s * 2.4);
+  gl.addColorStop(0, `rgba(80,160,255,${.7 * k})`); gl.addColorStop(.3, `rgba(60,135,255,${.38 * k})`);
+  gl.addColorStop(.6, `rgba(50,115,255,${.16 * k})`); gl.addColorStop(1, 'rgba(40,100,255,0)');
+  c.fillStyle = gl; c.fillRect(-s * 2.5, -s * 2.5, s * 5, s * 5);
+  c.restore();
+  basaltIdol(c, s, now, hp);
+  if (hit > 0) {
+    c.globalCompositeOperation = 'lighter';
+    const g = c.createRadialGradient(-s * .2, -s * .3, 0, -s * .2, -s * .3, s);
+    g.addColorStop(0, `rgba(170,255,230,${.45 * hit})`); g.addColorStop(1, 'rgba(170,255,230,0)');
+    c.fillStyle = g; c.fillRect(-s, -s * 1.2, s * 2, s * 2.2);
+  }
+  c.restore();
+}
+
+function drawIdolLayer(now) {
+  if (!idol || idol.crumble >= 1) return;
+  const x = PAD + (idol.c + .5) * cell, y = PAD + (idol.r + .5) * cell;
+  if (idol.hp > 0) {
+    const k = ease.outBack(Math.max(0, idol.shown));
+    if (k <= .02) return;
+    const jx = Math.sin(performance.now() / 18) * idol.hit * cell * .04;
+    drawIdol(ctx, x + jx, y, cell * k, now, idol.hp, idol.hit);
+  } else {
+    // it topples: sinks, shrinks and fades as the stone beneath is revealed
+    const k = idol.crumble;
+    drawIdol(ctx, x, y + k * cell * .3, cell * (1 - k * .3), now, 0, idol.hit, 1 - k);
+  }
+}
+
+function drawIdolIntro(c, s, now) {
+  // the idol standing in water
+  const y = s * .74;
+  c.save();
+  c.beginPath(); c.rect(0, y, s, s - y);
+  c.fillStyle = 'rgba(30,110,110,.5)'; c.fill();
+  c.restore();
+  drawIdol(c, s / 2, s / 2, s * .8, now, IDOL_HP, 0, 1, false);
+  c.save();
+  c.beginPath(); c.rect(0, y, s, s - y);
+  c.fillStyle = 'rgba(20,90,95,.45)'; c.fill();
+  c.beginPath();
+  for (let j = 0; j <= 16; j++) {
+    const x = j / 16 * s, yy = y + Math.sin(j / 16 * TAU * 2 + now / 350) * s * .012;
+    j ? c.lineTo(x, yy) : c.moveTo(x, yy);
+  }
+  c.strokeStyle = 'rgba(175,245,235,.6)'; c.lineWidth = Math.max(1, s * .015); c.stroke();
+  c.restore();
+}
+
+// A drop of sea water, for the drain goal.
+function drawWaterIcon(c, cx, cy, size) {
+  const s = size * .5;
+  c.save();
+  c.beginPath();
+  c.moveTo(cx, cy - s * .9);
+  c.bezierCurveTo(cx + s * .2, cy - s * .5, cx + s * .62, cy - s * .1, cx + s * .62, cy + s * .28);
+  c.arc(cx, cy + s * .28, s * .62, 0, Math.PI);
+  c.bezierCurveTo(cx - s * .62, cy - s * .1, cx - s * .2, cy - s * .5, cx, cy - s * .9);
+  c.closePath();
+  const g = c.createLinearGradient(cx - s * .5, cy - s * .8, cx + s * .5, cy + s * .9);
+  g.addColorStop(0, '#a8f2e4'); g.addColorStop(.45, '#2b8a84'); g.addColorStop(1, '#0b3d40');
+  c.fillStyle = g; c.fill();
+  c.strokeStyle = 'rgba(0,0,0,.5)'; c.lineWidth = Math.max(1, s * .06); c.stroke();
+  c.beginPath(); c.ellipse(cx - s * .25, cy + s * .15, s * .1, s * .2, .3, 0, TAU);
+  c.fillStyle = 'rgba(230,255,250,.45)'; c.fill();
+  c.restore();
 }
 
 // ---------- Rendering: stones ----------
@@ -2180,7 +2664,7 @@ function draw(now) {
   ctx.save();
   ctx.beginPath(); ctx.rect(PAD, PAD, cell * COLS, cell * ROWS); ctx.clip();
   forEachPiece((p, r, c) => {
-    if (p === dragged || p.fly) return;
+    if (p === dragged || p.fly || idolAt(r, c)) return;
     let mult = 1, dy = 0;
     if (hintPieces.includes(p)) mult = 1 + 0.1 * Math.sin(now / 110);
     if (selected && selected.r === r && selected.c === c) dy = Math.sin(now / 140) * cell * .05;
@@ -2189,6 +2673,8 @@ function draw(now) {
   if (dragged) drawPiece(ctx, dragged, PAD + (dragged.x + .5) * cell, PAD + (dragged.y + .5) * cell, cell, now, 1.1);
   ctx.restore();
   drawShoggothLayer(now);
+  drawFloodLayer(now);
+  drawIdolLayer(now);
   if (pv && pv.aims.length) drawAims(pv.aims, .8);
 
   for (const f of fx) {
@@ -2302,6 +2788,15 @@ function frame(now) {
   for (let r = 0; r < shogFill.length; r++)
     for (let c = 0; c < COLS; c++)
       shogFill[r][c] = shog[r][c] ? Math.min(1, shogFill[r][c] + dt / 600) : Math.max(0, shogFill[r][c] - dt / 260);
+  // water rises slowly like a tide and drains away quickly
+  for (let r = 0; r < floodFill.length; r++)
+    for (let c = 0; c < COLS; c++)
+      floodFill[r][c] = flood[r][c] ? Math.min(1, floodFill[r][c] + dt / 700) : Math.max(0, floodFill[r][c] - dt / 300);
+  if (idol) {
+    idol.shown = Math.min(1, idol.shown + dt / 600);
+    idol.hit = Math.max(0, idol.hit - dt / 400);
+    if (idol.hp <= 0) idol.crumble = Math.min(1, idol.crumble + dt / 700);
+  }
   updateDrone(now);
   if (state === 'playing' && !busy && !hint && !selected && now - lastInput > 5000) hint = findMove();
   drawBackground(now);
@@ -2325,7 +2820,7 @@ canvas.addEventListener('pointerdown', e => {
   hint = null;
   if (busy || state !== 'playing') return;
   const at = cellAt(e);
-  if (!at || shogAt(at.r, at.c)) return;
+  if (!at || lockedAt(at.r, at.c)) return;
   if (selected && Math.abs(selected.r - at.r) + Math.abs(selected.c - at.c) === 1) {
     const s = selected;
     selected = null;
@@ -2362,7 +2857,7 @@ function dragTo(e) {
   const s = drag.start, A = grid[s.r][s.c];
   const raw = (drag.axis === 'h' ? dx : dy) / cell, sign = Math.sign(raw);
   const n = drag.axis === 'h' ? { r: s.r, c: s.c + sign } : { r: s.r + sign, c: s.c };
-  if (!sign || !inBounds(n.r, n.c) || shogAt(n.r, n.c)) {
+  if (!sign || !inBounds(n.r, n.c) || lockedAt(n.r, n.c)) {
     resetNeighbor();
     A.x = s.c; A.y = s.r; drag.offset = 0;
     return;
@@ -2429,6 +2924,7 @@ resize();
 cfg = levelConfig(level);
 collected = new Array(NC).fill(0);
 seedShoggoth(0);
+seedIdol(false);
 generateBoard();
 seedTaint(0);
 buildGoals();

@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Idol Studies</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #e4f5ee; --muted: rgba(200, 235, 222, .72); --edge: rgba(125, 255, 200, .16); }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    font-family: "IM Fell English", Georgia, serif;
+    background: radial-gradient(ellipse at 50% 0%, #0b2421 0%, #04100f 45%, #020807 100%) fixed;
+  }
+  header { max-width: 1100px; margin: 0 auto; padding: 28px 16px 4px; text-align: center; }
+  h1 {
+    margin: 0 0 6px;
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 900;
+    font-size: 30px;
+    color: #c9ffe8;
+    text-shadow: 0 0 18px rgba(61, 255, 176, .4);
+  }
+  header p { margin: 0 auto; max-width: 660px; font-size: 19px; line-height: 1.5; color: #e2f2ec; }
+  .controls { display: flex; justify-content: center; gap: 10px; margin: 16px 0 4px; }
+  button {
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 700;
+    letter-spacing: .06em;
+    color: var(--ink);
+    border: 1px solid rgba(125, 255, 200, .3);
+    background: rgba(6, 24, 22, .6);
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 12px 16px 40px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+    gap: 18px;
+  }
+  .study {
+    background: linear-gradient(180deg, rgba(14, 44, 39, .55), rgba(4, 16, 14, .75));
+    border: 1px solid var(--edge);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .study h2 { margin: 0; font-family: Cinzel, Georgia, serif; font-size: 20px; letter-spacing: .05em; }
+  .study .tag {
+    margin: 2px 0 12px;
+    font-family: Cinzel, Georgia, serif;
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .board { display: block; width: 100%; cursor: pointer; touch-action: manipulation; }
+  .row { display: flex; gap: 14px; align-items: center; margin-top: 12px; }
+  .icons { flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .icons canvas { display: block; }
+  .pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 12px 3px 6px;
+    border: 1px solid var(--edge);
+    border-radius: 999px;
+    background: rgba(6, 24, 22, .32);
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .study p { margin: 0; font-size: 18px; line-height: 1.45; color: #e2f2ec; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Idol Studies</h1>
+    <p>Four alternatives to the current idol. They use lighter materials and are shaded like carved stone, with no outlines. Each is shown standing in the flood with its goal-pill and intro-card icons. Use the buttons to see the cracks and the topple.</p>
+    <div class="controls"><button data-hp="3">Intact</button><button data-hp="2">1 blow</button><button data-hp="1">2 blows</button><button data-hp="0">Topple</button></div>
+  </header>
+  <main id="studies"></main>
+
+<script>
+(() => {
+'use strict';
+
+const COLS = 6, ROWS = 5, PAD = 8, TAU = Math.PI * 2;
+const IDOL = [2, 2], WATER = ['..X...', '.XIXX.', '..XX..', '......', '......'];
+const STONES = [
+  { shape: 'circle',   light: '#a9ecd6', fill: '#3e9c86', dark: '#103b33' },
+  { shape: 'square',   light: '#fff6e0', fill: '#cdbf9c', dark: '#5f5440' },
+  { shape: 'star',     light: '#ffb8a6', fill: '#c4543f', dark: '#521810' },
+  { shape: 'diamond',  light: '#c4aef0', fill: '#5d3f8f', dark: '#1c0f31' },
+  { shape: 'hex',      light: '#d4f7a4', fill: '#7aa83e', dark: '#243f12' },
+  { shape: 'triangle', light: '#ffe6a8', fill: '#c9932f', dark: '#563809' },
+];
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const clamp01 = v => Math.max(0, Math.min(1, v));
+const smooth = (a, b, v) => { const t = clamp01((v - a) / (b - a)); return t * t * (3 - 2 * t); };
+const outBack = t => { const s = 1.70158; t -= 1; return t * t * ((s + 1) * t + s) + 1; };
+const dpr = Math.min(2, window.devicePixelRatio || 1);
+
+// ---------- board and stones (simplified from the game) ----------
+function roundRectPath(c, x, y, w, h, r) {
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function shapePath(c, shape, cx, cy, r) {
+  c.beginPath();
+  switch (shape) {
+    case 'circle': c.arc(cx, cy, r * .9, 0, TAU); break;
+    case 'square': roundRectPath(c, cx - r * .8, cy - r * .8, r * 1.6, r * 1.6, r * .22); break;
+    case 'star':
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + i * Math.PI / 5, rad = i % 2 ? r * .52 : r * 1.02;
+        const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad + r * .06;
+        i ? c.lineTo(px, py) : c.moveTo(px, py);
+      }
+      c.closePath();
+      break;
+    case 'diamond':
+      c.moveTo(cx, cy - r); c.lineTo(cx + r * .78, cy); c.lineTo(cx, cy + r); c.lineTo(cx - r * .78, cy);
+      c.closePath();
+      break;
+    case 'hex':
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3, px = cx + Math.cos(a) * r * .92, py = cy + Math.sin(a) * r * .92;
+        i ? c.lineTo(px, py) : c.moveTo(px, py);
+      }
+      c.closePath();
+      break;
+    case 'triangle':
+      c.moveTo(cx, cy - r * .92); c.lineTo(cx + r * .95, cy + r * .72); c.lineTo(cx - r * .95, cy + r * .72);
+      c.closePath();
+      break;
+  }
+}
+
+function drawStone(c, st, cx, cy, r) {
+  shapePath(c, st.shape, cx, cy + r * .1, r);
+  c.fillStyle = 'rgba(0,0,0,.45)'; c.fill();
+  shapePath(c, st.shape, cx, cy, r);
+  const g = c.createLinearGradient(cx - r * .4, cy - r, cx + r * .4, cy + r);
+  g.addColorStop(0, st.light); g.addColorStop(.38, st.fill); g.addColorStop(1, st.dark);
+  c.fillStyle = g; c.fill();
+  c.lineJoin = 'round'; c.lineWidth = Math.max(1, r * .07); c.strokeStyle = st.dark; c.stroke();
+}
+
+function drawBoard(c, cs, W, H) {
+  c.beginPath(); roundRectPath(c, 0, 0, W, H, 14);
+  c.fillStyle = 'rgba(3,12,12,.55)'; c.fill();
+  c.strokeStyle = 'rgba(125,255,200,.14)'; c.lineWidth = 1.5; c.stroke();
+  for (let r = 0; r < ROWS; r++) {
+    for (let col = 0; col < COLS; col++) {
+      const x = PAD + col * cs + 2, y = PAD + r * cs + 2, w = cs - 4;
+      c.beginPath(); roundRectPath(c, x, y, w, w, cs * .14);
+      c.fillStyle = (r + col) % 2 ? 'rgba(140,190,175,.05)' : 'rgba(140,190,175,.1)';
+      c.fill();
+      c.strokeStyle = 'rgba(0,0,0,.35)'; c.lineWidth = 1; c.stroke();
+      if (r !== IDOL[0] || col !== IDOL[1]) drawStone(c, STONES[Math.floor(hash(r * 31 + col * 7 + 3) * 6)], PAD + (col + .5) * cs, PAD + (r + .5) * cs, cs * .42);
+    }
+  }
+}
+
+// ---------- flood (as in the game) ----------
+function drawWater(c, cs, now) {
+  const cells = [];
+  WATER.forEach((row, r) => [...row].forEach((ch, col) => { if (ch === 'X') cells.push([r, col]); }));
+  c.save();
+  c.beginPath();
+  for (const [r, col] of cells) c.rect(PAD + col * cs, PAD + r * cs, cs, cs);
+  const g = c.createLinearGradient(0, PAD, 0, PAD + ROWS * cs);
+  g.addColorStop(0, 'rgba(38,118,116,.58)'); g.addColorStop(1, 'rgba(8,48,58,.7)');
+  c.fillStyle = g; c.fill();
+  c.save(); c.clip();
+  c.globalCompositeOperation = 'lighter';
+  c.lineWidth = Math.max(1, cs * .045); c.strokeStyle = 'rgba(120,230,215,.09)';
+  const W = COLS * cs, H = ROWS * cs;
+  for (let i = 0; i < 7; i++) {
+    c.beginPath();
+    for (let j = 0; j <= 24; j++) {
+      const u = j / 24, x = PAD + u * W, y = PAD + (i - .5) / 6 * H + Math.sin(u * 7 + now / 900 + i * 1.7) * cs * .22;
+      j ? c.lineTo(x, y) : c.moveTo(x, y);
+    }
+    c.stroke();
+  }
+  c.restore();
+  c.strokeStyle = 'rgba(175,245,235,.5)'; c.lineWidth = Math.max(1, cs * .03);
+  c.beginPath();
+  for (const [r, col] of cells) {
+    if (r > 0 && WATER[r - 1][col] === 'X') continue;
+    for (let j = 0; j <= 8; j++) {
+      const x = PAD + (col + j / 8) * cs, y = PAD + r * cs + Math.sin(j / 8 * TAU + now / 350 + col * 2) * cs * .025;
+      j ? c.lineTo(x, y) : c.moveTo(x, y);
+    }
+  }
+  c.stroke();
+  c.restore();
+}
+
+// ---------- carving helpers ----------
+// Everything is lit from the upper left. Carved lines are a dark groove with a pale lower-right
+// lip; hollows are dark inside with light catching their lower rim. No outlines anywhere.
+const P = (s, pts) => pts.map(([x, y]) => [x * s, y * s]);
+function poly(c, pts) { c.beginPath(); pts.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y)); }
+
+function shade(c, path, s, light, mid, dark) {
+  path();
+  const g = c.createLinearGradient(-s * .6, -s * .9, s * .6, s * .9);
+  g.addColorStop(0, light); g.addColorStop(.45, mid); g.addColorStop(1, dark);
+  c.fillStyle = g; c.fill();
+  c.save(); path(); c.clip();
+  const h = c.createRadialGradient(-s * .3, -s * .55, 0, -s * .3, -s * .55, s * .9);
+  h.addColorStop(0, 'rgba(255,255,255,.2)'); h.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = h; c.fillRect(-s, -s * 1.1, s * 2, s * 2.2);
+  const ao = c.createLinearGradient(0, s * .1, 0, s * .9);
+  ao.addColorStop(0, 'rgba(0,0,0,0)'); ao.addColorStop(1, 'rgba(0,0,0,.35)');
+  c.fillStyle = ao; c.fillRect(-s, -s * 1.1, s * 2, s * 2.2);
+  c.restore();
+}
+
+function groove(c, pts, w, depth = .42, lip = .18) {
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  poly(c, pts); c.strokeStyle = `rgba(0,0,0,${depth})`; c.lineWidth = w; c.stroke();
+  c.save(); c.translate(w * .45, w * .45);
+  poly(c, pts); c.strokeStyle = `rgba(255,255,255,${lip})`; c.lineWidth = w * .5; c.stroke();
+  c.restore();
+}
+function curveGroove(c, x0, y0, cx, cy, x1, y1, w, depth = .42, lip = .18) {
+  c.lineCap = 'round';
+  c.beginPath(); c.moveTo(x0, y0); c.quadraticCurveTo(cx, cy, x1, y1);
+  c.strokeStyle = `rgba(0,0,0,${depth})`; c.lineWidth = w; c.stroke();
+  c.beginPath(); c.moveTo(x0 + w * .45, y0 + w * .45); c.quadraticCurveTo(cx + w * .45, cy + w * .45, x1 + w * .45, y1 + w * .45);
+  c.strokeStyle = `rgba(255,255,255,${lip})`; c.lineWidth = w * .5; c.stroke();
+}
+function hollow(c, x, y, rx, ry, depth = .6) {
+  const g = c.createRadialGradient(x - rx * .25, y - ry * .3, 0, x, y, Math.max(rx, ry));
+  g.addColorStop(0, `rgba(0,0,0,${depth})`); g.addColorStop(.75, `rgba(0,0,0,${depth * .6})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.beginPath(); c.ellipse(x, y, rx, ry, 0, 0, TAU); c.fillStyle = g; c.fill();
+  c.beginPath(); c.ellipse(x, y, rx * .95, ry * .95, 0, -.3, 1.9);
+  c.strokeStyle = 'rgba(255,255,255,.2)'; c.lineWidth = Math.max(.6, rx * .14); c.stroke();
+}
+function ember(c, x, y, r, now, col) {
+  const k = .6 + .25 * Math.sin(now / 700 + x);
+  c.save(); c.globalCompositeOperation = 'lighter';
+  const g = c.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, `rgba(${col},${.9 * k})`); g.addColorStop(.35, `rgba(${col},${.35 * k})`); g.addColorStop(1, `rgba(${col},0)`);
+  c.fillStyle = g; c.fillRect(x - r, y - r, r * 2, r * 2);
+  c.restore();
+}
+function speckle(c, s, n, seed, x0, x1, y0, y1) {
+  for (let i = 0; i < n; i++) {
+    const h = seed * 31 + i * 7, x = (x0 + (x1 - x0) * hash(h)) * s, y = (y0 + (y1 - y0) * hash(h + 1)) * s, r = s * (.008 + .02 * hash(h + 2));
+    c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = hash(h + 3) > .5 ? 'rgba(0,0,0,.16)' : 'rgba(255,255,255,.1)'; c.fill();
+  }
+}
+function drips(c, s, now, xs, y0, len, col) {
+  xs.forEach((x, i) => {
+    const ph = (now / 1500 + i * .37) % 1;
+    c.globalAlpha = (1 - ph) * .75;
+    c.beginPath(); c.ellipse(x * s, y0 * s + ph * len * s, s * .022, s * .034, 0, 0, TAU); c.fillStyle = col; c.fill();
+  });
+  c.globalAlpha = 1;
+}
+const CRACKS = [
+  [[-.12, -.8], [-.03, -.62], [-.15, -.46], [-.05, -.28], [-.17, -.06]],
+  [[.2, -.04], [.09, .14], [.23, .32], [.1, .56]],
+];
+function cracks(c, s, hp, glow) {
+  for (let i = 0; i < Math.min(2, 3 - hp); i++) {
+    const pts = P(s, CRACKS[i]);
+    if (glow) {
+      c.save(); c.globalCompositeOperation = 'lighter';
+      poly(c, pts); c.strokeStyle = 'rgba(160,255,210,.35)'; c.lineWidth = s * .09; c.lineCap = 'round'; c.stroke();
+      poly(c, pts); c.strokeStyle = 'rgba(230,255,240,.9)'; c.lineWidth = s * .025; c.stroke();
+      c.restore();
+    } else groove(c, pts, Math.max(1.2, s * .05), .75, .28);
+  }
+}
+function groundShadow(c, s, w = .7) {
+  c.beginPath(); c.ellipse(0, s * .86, s * w, s * .12, 0, 0, TAU);
+  const g = c.createRadialGradient(0, s * .86, 0, 0, s * .86, s * w);
+  g.addColorStop(0, 'rgba(0,0,0,.5)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g; c.fill();
+}
+
+// ---------- A. Stele ----------
+function drawStele(c, s, now, hp) {
+  groundShadow(c, s, .6);
+  // rubble the slab is sunk into
+  for (const [x, y, rx, ry] of [[-.36, .78, .16, .09], [.34, .8, .14, .08], [-.12, .84, .18, .07], [.14, .85, .16, .07]]) {
+    shade(c, () => { c.beginPath(); c.ellipse(x * s, y * s, rx * s, ry * s, 0, 0, TAU); }, s, '#9aa294', '#6c7469', '#3f463f');
+  }
+  // the right-hand face, in shadow, gives it thickness
+  shade(c, () => poly(c, P(s, [[.26, -.66], [.36, -.58], [.39, .78], [.3, .8]])), s, '#59635a', '#454e47', '#2e3530');
+  const face = () => {
+    c.beginPath(); c.moveTo(-.31 * s, .8 * s); c.lineTo(-.27 * s, -.62 * s);
+    c.quadraticCurveTo(-.25 * s, -.93 * s, 0, -.94 * s); c.quadraticCurveTo(.25 * s, -.93 * s, .27 * s, -.62 * s);
+    c.lineTo(.31 * s, .8 * s); c.closePath();
+  };
+  shade(c, face, s, '#c3cbbb', '#8f9a8c', '#5a6459');
+  c.save(); face(); c.clip();
+  speckle(c, s, 40, 3, -.3, .3, -.9, .8);
+  // the god's face in low relief
+  curveGroove(c, -.22 * s, -.66 * s, -.12 * s, -.74 * s, -.03 * s, -.65 * s, Math.max(.8, s * .03));
+  curveGroove(c, .03 * s, -.65 * s, .12 * s, -.74 * s, .22 * s, -.66 * s, Math.max(.8, s * .03));
+  hollow(c, -.12 * s, -.55 * s, .085 * s, .07 * s);
+  hollow(c, .12 * s, -.55 * s, .085 * s, .07 * s);
+  ember(c, -.12 * s, -.55 * s, .06 * s, now, '120,255,210');
+  ember(c, .12 * s, -.55 * s, .06 * s, now, '120,255,210');
+  curveGroove(c, -.17 * s, -.33 * s, 0, -.38 * s, .17 * s, -.33 * s, Math.max(1, s * .04));
+  for (const sg of [-1, 1]) for (let i = 0; i < 3; i++) {
+    const x = sg * (.18 + i * .03) * s;
+    curveGroove(c, x, -.48 * s, x + sg * .02 * s, -.4 * s, x, -.32 * s, Math.max(.6, s * .02), .35, .14);
+  }
+  // rows of glyphs
+  for (let row = 0; row < 4; row++) for (let i = 0; i < 3; i++) {
+    const x = (-.14 + i * .14) * s, y = (-.12 + row * .16) * s, h = hash(row * 7 + i), w = Math.max(.6, s * .022);
+    if (h < .33) groove(c, [[x, y - .05 * s], [x, y + .05 * s]], w, .36, .14);
+    else if (h < .66) { c.beginPath(); c.arc(x, y, .04 * s, 0, TAU); c.strokeStyle = 'rgba(0,0,0,.36)'; c.lineWidth = w; c.stroke(); }
+    else curveGroove(c, x - .04 * s, y - .04 * s, x + .06 * s, y, x - .03 * s, y + .05 * s, w, .36, .14);
+  }
+  // weed at the waterline and a wet sheen
+  const g = c.createLinearGradient(0, .4 * s, 0, .8 * s);
+  g.addColorStop(0, 'rgba(60,110,70,0)'); g.addColorStop(1, 'rgba(50,100,60,.6)');
+  c.fillStyle = g; c.fillRect(-s, .4 * s, 2 * s, .5 * s);
+  c.beginPath(); c.moveTo(-.24 * s, -.7 * s); c.lineTo(-.27 * s, .6 * s);
+  c.strokeStyle = 'rgba(255,255,255,.16)'; c.lineWidth = s * .04; c.stroke();
+  cracks(c, s, hp, false);
+  c.restore();
+  // barnacles crusting the foot
+  for (let i = 0; i < 9; i++) {
+    const x = (-.3 + .6 * hash(i * 5)) * s, y = (.58 + .2 * hash(i * 5 + 1)) * s, r = s * (.02 + .02 * hash(i * 5 + 2));
+    c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = '#d9d4c2'; c.fill();
+    c.beginPath(); c.arc(x + r * .1, y + r * .1, r * .4, 0, TAU); c.fillStyle = 'rgba(40,40,35,.7)'; c.fill();
+  }
+  drips(c, s, now, [-.2, .1], .3, .5, 'rgba(170,235,225,.9)');
+}
+
+// ---------- crouching figure (B and D share it) ----------
+function crouchBody(s) {
+  return () => {
+    c_.beginPath();
+    const c = c_;
+    c.moveTo(-.64 * s, .8 * s);
+    c.quadraticCurveTo(-.74 * s, .45 * s, -.54 * s, .22 * s);
+    c.quadraticCurveTo(-.62 * s, -.02 * s, -.44 * s, -.2 * s);
+    c.lineTo(.44 * s, -.2 * s);
+    c.quadraticCurveTo(.62 * s, -.02 * s, .54 * s, .22 * s);
+    c.quadraticCurveTo(.74 * s, .45 * s, .64 * s, .8 * s);
+    c.closePath();
+  };
+}
+let c_ = null;
+function crouchHead(s) {
+  return () => {
+    const c = c_;
+    c.beginPath();
+    c.moveTo(-.36 * s, -.24 * s);
+    c.bezierCurveTo(-.46 * s, -.5 * s, -.3 * s, -.86 * s, 0, -.86 * s);
+    c.bezierCurveTo(.3 * s, -.86 * s, .46 * s, -.5 * s, .36 * s, -.24 * s);
+    c.quadraticCurveTo(0, -.12 * s, -.36 * s, -.24 * s);
+    c.closePath();
+  };
+}
+function drawCrouch(c, s, now, hp, m) {
+  c_ = c;
+  groundShadow(c, s, .75);
+  // plinth
+  shade(c, () => poly(c, P(s, [[-.7, .66], [.7, .66], [.74, .88], [-.74, .88]])), s, m.plinth[0], m.plinth[1], m.plinth[2]);
+  if (m.aura) {
+    c.save(); c.globalCompositeOperation = 'lighter';
+    const g = c.createRadialGradient(0, -.1 * s, 0, 0, -.1 * s, s * 1.1);
+    g.addColorStop(0, `rgba(120,255,190,${.16 + .05 * Math.sin(now / 900)})`); g.addColorStop(1, 'rgba(120,255,190,0)');
+    c.fillStyle = g; c.fillRect(-s * 1.1, -s * 1.2, s * 2.2, s * 2.2);
+    c.restore();
+  }
+  // fin crest behind the head
+  shade(c, () => poly(c, P(s, [[-.1, -.8], [-.04, -1.0], [.04, -.98], [.1, -.8]])), s, ...m.body);
+  const body = crouchBody(s), head = crouchHead(s);
+  shade(c, body, s, ...m.body);
+  c.save(); body(); c.clip();
+  if (m.inner) m.inner(c, s, now);
+  // knees, and webbed hands resting on them
+  for (const sg of [-1, 1]) {
+    shade(c, () => { c.beginPath(); c.ellipse(sg * .34 * s, .34 * s, .22 * s, .2 * s, 0, 0, TAU); }, s, ...m.body);
+    for (let i = 0; i < 4; i++) {
+      const x = sg * (.22 + i * .06) * s;
+      curveGroove(c, x, .16 * s, x + sg * .015 * s, .24 * s, x + sg * .01 * s, .32 * s, Math.max(.6, s * .022), .35, m.lip);
+    }
+  }
+  curveGroove(c, -.2 * s, .5 * s, 0, .58 * s, .2 * s, .5 * s, Math.max(.7, s * .03), .3, m.lip);
+  if (m.wear) m.wear(c, s, [[-.34, .2], [.34, .2]]);
+  c.restore();
+  shade(c, head, s, ...m.body);
+  c.save(); head(); c.clip();
+  if (m.inner) m.inner(c, s, now);
+  // brow, wide-set eyes, a lipless mouth, gills
+  curveGroove(c, -.3 * s, -.6 * s, -.17 * s, -.7 * s, -.05 * s, -.6 * s, Math.max(.8, s * .03), .4, m.lip);
+  curveGroove(c, .05 * s, -.6 * s, .17 * s, -.7 * s, .3 * s, -.6 * s, Math.max(.8, s * .03), .4, m.lip);
+  for (const sg of [-1, 1]) {
+    hollow(c, sg * .18 * s, -.5 * s, .1 * s, .08 * s, m.eyeDepth);
+    m.eye(c, sg * .18 * s, -.5 * s, s, now);
+    for (let i = 0; i < 3; i++) {
+      const x = sg * (.27 + i * .035) * s;
+      curveGroove(c, x, -.42 * s, x + sg * .02 * s, -.34 * s, x, -.26 * s, Math.max(.6, s * .02), .35, m.lip);
+    }
+  }
+  curveGroove(c, -.2 * s, -.3 * s, 0, -.24 * s, .2 * s, -.3 * s, Math.max(1, s * .04), .5, m.lip);
+  if (m.wear) m.wear(c, s, [[0, -.76], [-.17, -.64], [.17, -.64]]);
+  c.restore();
+  if (m.streaks) m.streaks(c, s);
+  c.save(); body(); c.clip(); cracks(c, s, hp, m.glowCracks); c.restore();
+  if (m.speculars) m.speculars(c, s, now);
+  drips(c, s, now, [-.12, .15], -.2, .7, 'rgba(170,235,225,.9)');
+}
+
+const BRONZE = {
+  plinth: ['#b7b2a0', '#8c887a', '#5b584f'],
+  body: ['#9ad8c0', '#4f9a84', '#1f4a40'], lip: .2, eyeDepth: .55,
+  wear: (c, s, spots) => {
+    // bronze showing through where the patina has worn off
+    for (const [x, y] of spots) {
+      const g = c.createRadialGradient(x * s, y * s, 0, x * s, y * s, s * .2);
+      g.addColorStop(0, 'rgba(214,166,104,.6)'); g.addColorStop(1, 'rgba(214,166,104,0)');
+      c.fillStyle = g; c.fillRect((x - .2) * s, (y - .2) * s, s * .4, s * .4);
+    }
+  },
+  eye: (c, x, y, s) => {
+    const g = c.createRadialGradient(x - s * .02, y - s * .02, 0, x, y, s * .055);
+    g.addColorStop(0, '#f4d38d'); g.addColorStop(1, '#8a5a22');
+    c.beginPath(); c.arc(x, y, s * .05, 0, TAU); c.fillStyle = g; c.fill();
+    c.beginPath(); c.arc(x - s * .015, y - s * .018, s * .013, 0, TAU); c.fillStyle = 'rgba(255,255,255,.85)'; c.fill();
+  },
+  streaks: (c, s) => {
+    // pale patina run down from the head
+    c.save(); c.globalAlpha = .18; c.strokeStyle = '#c8f2e2'; c.lineWidth = s * .02; c.lineCap = 'round';
+    for (const [x, y0, y1] of [[-.28, -.2, .1], [.05, -.16, .3], [.3, -.2, .02], [-.46, .3, .7]]) {
+      c.beginPath(); c.moveTo(x * s, y0 * s); c.lineTo((x + .01) * s, y1 * s); c.stroke();
+    }
+    c.restore();
+  },
+};
+
+const JADE = {
+  plinth: ['#a7a99b', '#7b7d71', '#4b4d45'],
+  body: ['#c4f3d9', '#5fb48c', '#1d5a44'], lip: .3, eyeDepth: .35, aura: true, glowCracks: true,
+  inner: (c, s, now) => {
+    // light moving through veins in the stone
+    c.save(); c.globalCompositeOperation = 'lighter';
+    c.strokeStyle = 'rgba(220,255,235,.14)'; c.lineWidth = s * .03; c.lineCap = 'round';
+    for (let i = 0; i < 4; i++) {
+      c.beginPath();
+      for (let j = 0; j <= 10; j++) {
+        const u = j / 10, x = (-.6 + 1.2 * u) * s, y = (-.7 + i * .4 + Math.sin(u * 5 + i * 2 + now / 2400) * .08) * s;
+        j ? c.lineTo(x, y) : c.moveTo(x, y);
+      }
+      c.stroke();
+    }
+    const g = c.createRadialGradient(0, -.1 * s, 0, 0, -.1 * s, s * .7);
+    g.addColorStop(0, 'rgba(180,255,215,.22)'); g.addColorStop(1, 'rgba(180,255,215,0)');
+    c.fillStyle = g; c.fillRect(-s, -s, 2 * s, 2 * s);
+    c.restore();
+  },
+  eye: (c, x, y, s, now) => ember(c, x, y, s * .09, now, '210,255,160'),
+  speculars: (c, s) => {
+    // polished highlights
+    for (const [x, y, rx, ry] of [[-.18, -.74, .08, .03], [-.42, .26, .05, .03], [.26, .24, .05, .025]]) {
+      c.beginPath(); c.ellipse(x * s, y * s, rx * s, ry * s, -.5, 0, TAU); c.fillStyle = 'rgba(255,255,255,.55)'; c.fill();
+    }
+  },
+};
+
+// ---------- C. Pale bust ----------
+function drawBust(c, s, now, hp) {
+  groundShadow(c, s, .55);
+  const bust = () => {
+    c.beginPath();
+    c.moveTo(-.42 * s, .86 * s); c.lineTo(-.36 * s, .5 * s);
+    c.quadraticCurveTo(-.5 * s, .2 * s, -.45 * s, -.2 * s);
+    c.bezierCurveTo(-.44 * s, -.7 * s, -.22 * s, -.93 * s, 0, -.93 * s);
+    c.bezierCurveTo(.22 * s, -.93 * s, .44 * s, -.7 * s, .45 * s, -.2 * s);
+    c.quadraticCurveTo(.5 * s, .2 * s, .36 * s, .5 * s);
+    c.lineTo(.42 * s, .86 * s); c.closePath();
+  };
+  shade(c, bust, s, '#f1e9d0', '#bfb497', '#72684f');
+  c.save(); bust(); c.clip();
+  // eroded pits, each with light catching its lower rim
+  for (let i = 0; i < 26; i++) {
+    const x = (-.4 + .8 * hash(i * 3 + 9)) * s, y = (-.85 + 1.7 * hash(i * 3 + 10)) * s, r = s * (.012 + .025 * hash(i * 3 + 11));
+    c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = 'rgba(60,50,35,.35)'; c.fill();
+    c.beginPath(); c.arc(x, y, r, .2, 1.8); c.strokeStyle = 'rgba(255,255,245,.3)'; c.lineWidth = Math.max(.5, r * .4); c.stroke();
+  }
+  // a heavy brow over sunken sockets
+  curveGroove(c, -.34 * s, -.52 * s, -.17 * s, -.64 * s, -.02 * s, -.52 * s, Math.max(1, s * .045), .45, .3);
+  curveGroove(c, .02 * s, -.52 * s, .17 * s, -.64 * s, .34 * s, -.52 * s, Math.max(1, s * .045), .45, .3);
+  hollow(c, -.17 * s, -.42 * s, .11 * s, .085 * s, .75);
+  hollow(c, .17 * s, -.42 * s, .11 * s, .085 * s, .75);
+  ember(c, -.17 * s, -.42 * s, .07 * s, now, '170,255,150');
+  ember(c, .17 * s, -.42 * s, .07 * s, now, '170,255,150');
+  // gill slits across the cheeks
+  for (const sg of [-1, 1]) for (let i = 0; i < 3; i++) {
+    const x = sg * (.24 + i * .045) * s;
+    groove(c, [[x, -.3 * s], [x + sg * .04 * s, -.14 * s]], Math.max(.7, s * .025), .4, .28);
+  }
+  // a long, lipless mouth
+  curveGroove(c, -.3 * s, -.12 * s, 0, -.08 * s, .3 * s, -.12 * s, Math.max(1.2, s * .05), .55, .3);
+  curveGroove(c, -.2 * s, -.02 * s, 0, .02 * s, .2 * s, -.02 * s, Math.max(.7, s * .025), .3, .25);
+  // carved collar rings
+  for (const y of [.3, .42]) curveGroove(c, -.42 * s, y * s, 0, (y + .06) * s, .42 * s, y * s, Math.max(.8, s * .03), .35, .28);
+  // coral crusting one side
+  for (let i = 0; i < 10; i++) {
+    const x = (.18 + .2 * hash(i * 4 + 50)) * s, y = (.48 + .35 * hash(i * 4 + 51)) * s, r = s * (.025 + .03 * hash(i * 4 + 52));
+    const g = c.createRadialGradient(x - r * .3, y - r * .3, 0, x, y, r);
+    g.addColorStop(0, '#e9b3a8'); g.addColorStop(1, '#8e544d');
+    c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = g; c.fill();
+  }
+  const wl = c.createLinearGradient(0, .5 * s, 0, .86 * s);
+  wl.addColorStop(0, 'rgba(60,100,70,0)'); wl.addColorStop(1, 'rgba(50,90,60,.45)');
+  c.fillStyle = wl; c.fillRect(-s, .5 * s, 2 * s, .4 * s);
+  cracks(c, s, hp, false);
+  c.restore();
+  drips(c, s, now, [-.1, .12], .05, .6, 'rgba(170,235,225,.9)');
+}
+
+// ---------- the studies ----------
+const DESIGNS = [
+  { name: 'Stele', tag: 'A slab with his face in low relief', draw: drawStele,
+    text: 'A pale, weathered basalt slab sunk into rubble. The fish-face is carved shallow, with faint light deep in the eye hollows, and rows of glyphs run beneath it. Barnacles and weed cover the foot. It reads as architecture rather than a character.' },
+  { name: 'Verdigris', tag: 'A corroded bronze figure', draw: (c, s, now, hp) => drawCrouch(c, s, now, hp, BRONZE),
+    text: 'A hunched, fish-headed figure in sea-green patina on a pale plinth. Warm bronze shows where it has worn smooth: the crown, the brow and the knees. The eyes are polished metal, and pale patina streaks run down it.' },
+  { name: 'Bone-Stone', tag: 'Pale, pitted and encrusted', draw: drawBust,
+    text: 'A tall, moai-like bust carved from cream shell-stone, eroded into pits and crusted with coral. Heavy brows overhang sunken sockets that each hold a sickly green ember. It stands out most strongly against the teal water.' },
+  { name: 'Sea-Jade', tag: 'Translucent, lit from within', draw: (c, s, now, hp) => drawCrouch(c, s, now, hp, JADE),
+    text: 'The same crouching figure in translucent green jade, with slow light moving through veins inside and a soft glow cast on the water. Its cracks leak light. It reads most clearly as a relic of power.' },
+];
+
+const studies = [], icons = [];
+let hp = 3, crumble = 0, toppling = false, pause = 0;
+const main = document.getElementById('studies');
+for (const d of DESIGNS) {
+  const el = document.createElement('section');
+  el.className = 'study';
+  el.innerHTML = `<h2>${d.name}</h2><div class="tag">${d.tag}</div><canvas class="board"></canvas>
+    <div class="row"><div class="icons"><canvas></canvas><div class="pill"><canvas></canvas>3 left</div></div><p>${d.text}</p></div>`;
+  main.appendChild(el);
+  const board = el.querySelector('.board'), [big, small] = el.querySelectorAll('.icons canvas');
+  studies.push({ d, board, ctx: board.getContext('2d'), cs: 0, W: 0, H: 0 });
+  icons.push({ d, canvas: big, size: 96, intro: true }, { d, canvas: small, size: 26 });
+}
+document.querySelectorAll('[data-hp]').forEach(b => b.addEventListener('click', () => {
+  const v = +b.dataset.hp;
+  hp = v || 1; crumble = 0; pause = 0; toppling = v === 0;
+}));
+
+function resize() {
+  for (const st of studies) {
+    const w = st.board.clientWidth;
+    st.cs = (w - PAD * 2) / COLS;
+    st.W = w; st.H = st.cs * ROWS + PAD * 2;
+    st.board.style.height = st.H + 'px';
+    st.board.width = Math.round(w * dpr); st.board.height = Math.round(st.H * dpr);
+  }
+  for (const ic of icons) {
+    ic.canvas.style.width = ic.canvas.style.height = ic.size + 'px';
+    ic.canvas.width = ic.canvas.height = Math.round(ic.size * dpr);
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+function idolAt(c, d, x, y, size, now, h, k = 0) {
+  c.save();
+  c.globalAlpha = 1 - k;
+  c.translate(x, y + k * size * .3);
+  d.draw(c, size * .5 * (1 - k * .3), now, h);
+  c.restore();
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(50, now - last); last = now;
+  if (toppling) {
+    // it falls, then stands back up after a pause so the designs can be compared again
+    if (crumble < 1) crumble = Math.min(1, crumble + dt / 700);
+    else if ((pause += dt) > 1400) { toppling = false; hp = 3; crumble = 0; pause = 0; }
+  }
+  for (const st of studies) {
+    const c = st.ctx;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, st.W, st.H);
+    drawBoard(c, st.cs, st.W, st.H);
+    c.save();
+    c.beginPath(); c.rect(PAD, PAD, st.cs * COLS, st.cs * ROWS); c.clip();
+    drawWater(c, st.cs, now);
+    if (crumble < 1) idolAt(c, st.d, PAD + (IDOL[1] + .5) * st.cs, PAD + (IDOL[0] + .5) * st.cs, st.cs, now, Math.max(1, hp), toppling ? crumble : 0);
+    c.restore();
+  }
+  for (const ic of icons) {
+    const c = ic.canvas.getContext('2d'), s = ic.size;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, s, s);
+    if (ic.intro) {
+      c.fillStyle = 'rgba(30,110,110,.5)'; c.fillRect(0, s * .74, s, s * .26);
+      idolAt(c, ic.d, s / 2, s / 2, s * .8, now, 3);
+      c.fillStyle = 'rgba(20,90,95,.45)'; c.fillRect(0, s * .74, s, s * .26);
+    } else idolAt(c, ic.d, s / 2, s / 2, s * 1.05, now, 3);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
