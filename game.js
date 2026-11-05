@@ -108,7 +108,7 @@ function audio() {
   }
   return actx;
 }
-function beep(freq, dur = 0.12, type = 'sine', vol = 0.12, delay = 0) {
+function beep(freq, dur = 0.12, type = 'sine', vol = 0.12, delay = 0, attack = 0.01) {
   if (muted) return;
   try {
     const a = audio(), t0 = a.currentTime + delay + fxDelay / 1000;
@@ -116,7 +116,7 @@ function beep(freq, dur = 0.12, type = 'sine', vol = 0.12, delay = 0) {
     o.type = type;
     o.frequency.setValueAtTime(freq, t0);
     g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.01);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + attack);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     o.connect(g).connect(master);
     o.start(t0);
@@ -191,10 +191,11 @@ function updateDrone(now) {
 const SCALE = [0, 3, 5, 7, 10, 12, 15, 17];
 function matchSound(cascade) {
   const base = 196 * Math.pow(2, SCALE[Math.min(cascade - 1, SCALE.length - 1)] / 12);
-  beep(base, 0.7, 'sine', 0.1);
-  beep(base * 1.003, 0.7, 'sine', 0.06);
-  beep(base * 1.5, 0.6, 'triangle', 0.035, 0.05);
-  noise(0.15, 650, 0.05, 0.9);
+  // a soft swell and a longer ring instead of a struck plunk
+  beep(base, 1.1, 'sine', 0.1, 0, 0.035);
+  beep(base * 1.003, 1.1, 'sine', 0.06, 0, 0.035);
+  beep(base * 1.5, 0.9, 'triangle', 0.03, 0.05, 0.05);
+  noise(0.15, 650, 0.02, 0.9);
 }
 
 // ---------- Board logic ----------
@@ -906,7 +907,7 @@ const INTROS = {
   },
   dart: {
     piece: [2, 'dart'], title: 'Witch-light',
-    text: 'A 2×2 square kindles a Witch-light. Set it off and it calls lightning down on a tainted stone, or one you still need. Its flicker shows where.',
+    text: 'A 2×2 square kindles a Witch-light. Set it off and it calls lightning down on a tainted stone, or one you still need. Drag it to see where.',
   },
   rainbow: {
     piece: [-1, 'rainbow'], title: 'Shining Trapezohedron',
@@ -1342,115 +1343,112 @@ function flashAlpha() {
 }
 
 // ---------- Rendering: shoggoth ----------
-// One dark, oily mass over the stones it engulfs. Eyes surface, look about, blink and sink;
-// mouths open and gnash; the whole body heaves.
-const SHOG_BODY = '#2b2d30', SHOG_EDGE = '#111214';
+// "A shapeless congeries of protoplasmic bubbles, faintly self-luminous": near-black foam
+// over the stones it engulfs, the bubbles swelling against each other. Its eyes are not
+// organs but pustules of green light that gather, look about and come apart again.
 const shogLevel = (r, c) => inBounds(r, c) && shogFill[r] ? Math.max(0, Math.min(1, shogFill[r][c])) : 0;
+const smooth = (a, b, v) => { const t = Math.max(0, Math.min(1, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
 
-function shogLumpPath(c, cx, cy, R, now, seed) {
-  const N = 20;
+function shogLump(c, cx, cy, R, now, seed) {
+  const N = 24;
   for (let i = 0; i <= N; i++) {
     const a = i / N * TAU;
-    const k = 1 + .08 * Math.sin(4 * a + seed + now / 520) + .05 * Math.sin(7 * a - seed * 2 + now / 330);
+    const k = 1 + .05 * Math.sin(3 * a + seed * 3 + now / 1500) + .04 * Math.sin(5 * a + seed * 5 + now / 1100);
     const x = cx + Math.cos(a) * R * k, y = cy + Math.sin(a) * R * k;
     i ? c.lineTo(x, y) : c.moveTo(x, y);
   }
   c.closePath();
 }
 
-function drawShoggothFeatures(c, cx, cy, size, l, now, seed) {
-  if (l < .4) return;
-  const a0 = Math.min(1, (l - .4) / .4);
+// cells: [{x, y, l, k, r, c}]; lvl(r, c) gives the neighbours' fill
+function drawCongeries(c, cells, lvl, cs, now) {
   c.save();
-  // eyes: each surfaces somewhere new every cycle
-  for (let i = 0; i < 3; i++) {
-    const P = 2400 + hash(seed * 3 + i) * 2200, t = now + hash(seed + i * 17) * P;
-    const n = Math.floor(t / P), ph = (t % P) / P;
-    let open = Math.min(1, Math.sin(ph * Math.PI) * 2.4);
-    if (ph > .42 && ph < .48) open *= .1; // blink
-    if (open <= .05) continue;
-    const h = hash(seed * 7 + i * 31 + n * 13), h2 = hash(seed * 11 + i * 7 + n * 29);
-    const x = cx + (h - .5) * size * .62, y = cy + (h2 - .5) * size * .62;
-    const e = size * (.07 + .07 * hash(seed + i + n * 3));
-    const look = now / 700 + seed + i, lx = Math.cos(look) * e * .3, ly = Math.sin(look * 1.3) * e * .2;
-    c.globalAlpha = a0;
-    c.beginPath(); c.ellipse(x, y, e, e * open, 0, 0, TAU);
-    c.fillStyle = '#cdc8b0'; c.fill();
-    c.beginPath(); c.ellipse(x + lx, y + ly * open, e * .55, e * .55 * open, 0, 0, TAU);
-    c.fillStyle = '#9dbb34'; c.fill();
-    c.beginPath(); c.ellipse(x + lx, y + ly * open, e * .22, e * .5 * open, 0, 0, TAU);
-    c.fillStyle = '#050505'; c.fill();
+  // a dark body under the foam, one path with a lump at every join so it has no gaps
+  c.beginPath();
+  for (const e of cells) {
+    shogLump(c, e.x, e.y, cs * .5 * ease.outBack(e.l), now, e.k * 1.7);
+    const lr = Math.min(e.l, lvl(e.r, e.c + 1)), ld = Math.min(e.l, lvl(e.r + 1, e.c));
+    if (lr > .03) shogLump(c, e.x + cs / 2, e.y, cs * .39 * lr, now, e.k * 2.3 + 1);
+    if (ld > .03) shogLump(c, e.x, e.y + cs / 2, cs * .39 * ld, now, e.k * 2.9 + 2);
+    const l4 = Math.min(lr, ld, lvl(e.r + 1, e.c + 1));
+    if (l4 > .03) shogLump(c, e.x + cs / 2, e.y + cs / 2, cs * .43 * l4, now, e.k * 3.1 + 3);
   }
-  // mouths: open and close, teeth along the upper lip
-  for (let i = 0; i < 2; i++) {
-    const P = 3000 + hash(seed * 5 + i) * 2500, t = now + hash(seed * 2 + i * 23) * P;
-    const n = Math.floor(t / P), ph = (t % P) / P, life = Math.min(1, Math.sin(ph * Math.PI) * 2);
-    if (life <= .05) continue;
-    const h = hash(seed * 13 + i * 41 + n * 7), h2 = hash(seed * 17 + i * 3 + n * 19);
-    const x = cx + (h - .5) * size * .55, y = cy + (h2 - .5) * size * .55;
-    const w = size * (.11 + .06 * hash(seed + i * 5 + n)), gape = w * .55 * life * (.35 + .65 * Math.abs(Math.sin(now / 170 + seed + i * 2)));
-    c.globalAlpha = a0;
-    c.beginPath(); c.ellipse(x, y, w, gape, 0, 0, TAU);
-    c.fillStyle = '#060607'; c.fill();
-    c.strokeStyle = '#4a4d51'; c.lineWidth = Math.max(1, size * .02); c.stroke();
-    if (gape > w * .15) {
-      c.beginPath();
-      for (let k = -2; k <= 2; k++) {
-        const tx = x + k * w * .34, ty = y - gape * Math.sqrt(Math.max(0, 1 - (k * .34) ** 2)) * .9;
-        c.moveTo(tx - w * .08, ty); c.lineTo(tx, ty + gape * .45); c.lineTo(tx + w * .08, ty);
+  c.fillStyle = 'rgba(3,6,5,.92)'; c.fill();
+
+  const bs = [];
+  for (const e of cells) {
+    for (let i = 0; i < 7; i++) {
+      const s = e.k * 19 + i * 7.3;
+      bs.push({ x: e.x + (hash(s) - .5) * cs * .66, y: e.y + (hash(s + 1) - .5) * cs * .66, r: cs * (.14 + .2 * hash(s + 2)), s, l: e.l });
+    }
+    const lr = Math.min(e.l, lvl(e.r, e.c + 1)), ld = Math.min(e.l, lvl(e.r + 1, e.c));
+    for (const [l2, dx, dy] of [[lr, .5, 0], [ld, 0, .5]]) {
+      if (l2 <= .03) continue;
+      for (let i = 0; i < 2; i++) {
+        const s = e.k * 23 + dx * 50 + i * 13;
+        bs.push({ x: e.x + dx * cs + (hash(s) - .5) * cs * .3, y: e.y + dy * cs + (hash(s + 1) - .5) * cs * .3, r: cs * (.16 + .12 * hash(s + 2)), s, l: l2 });
       }
-      c.fillStyle = '#d6d0bd'; c.fill();
+    }
+  }
+  bs.sort((a, b) => b.r - a.r);
+  for (const b of bs) {
+    const br = b.r * ease.outBack(b.l) * (1 + .12 * Math.sin(now / (900 + 700 * hash(b.s + 3)) + hash(b.s + 4) * TAU));
+    if (br < .5) continue;
+    const bx = b.x + Math.sin(now / 1900 + b.s) * cs * .025, by = b.y + Math.cos(now / 2300 + b.s) * cs * .025;
+    c.globalAlpha = Math.min(1, b.l * 1.4);
+    const g = c.createRadialGradient(bx - br * .2, by - br * .25, br * .1, bx, by, br);
+    g.addColorStop(0, '#0b100e'); g.addColorStop(.6, '#0e1713');
+    g.addColorStop(.86, 'rgba(64,118,84,.55)'); g.addColorStop(1, 'rgba(30,60,40,0)');
+    c.fillStyle = g; c.beginPath(); c.arc(bx, by, br, 0, TAU); c.fill();
+    c.beginPath(); c.ellipse(bx - br * .38, by - br * .42, br * .2, br * .09, -.7, 0, TAU);
+    c.fillStyle = 'rgba(205,235,215,.2)'; c.fill();
+  }
+
+  for (const e of cells) {
+    for (let i = 0; i < 3; i++) {
+      const P = 3400 + hash(e.k * 5 + i) * 2600, t = now + hash(e.k * 3 + i * 17) * P;
+      const n = Math.floor(t / P), ph = (t % P) / P;
+      const form = smooth(0, .22, ph) * (1 - smooth(.78, 1, ph));
+      if (form <= .01) continue;
+      const eye = smooth(.2, .36, ph) * (1 - smooth(.62, .8, ph));
+      const s = e.k * 31 + i * 11 + n * 17;
+      const x = e.x + (hash(s) - .5) * cs * .6, y = e.y + (hash(s + 1) - .5) * cs * .6;
+      const r = cs * (.035 + .05 * hash(s + 2));
+      c.globalCompositeOperation = 'lighter';
+      c.globalAlpha = form * e.l;
+      const g = c.createRadialGradient(x, y, 0, x, y, r * 2.6);
+      g.addColorStop(0, 'rgba(190,255,150,.9)'); g.addColorStop(.3, 'rgba(110,215,90,.5)'); g.addColorStop(1, 'rgba(30,90,30,0)');
+      c.fillStyle = g; c.fillRect(x - r * 2.6, y - r * 2.6, r * 5.2, r * 5.2);
+      if (eye > .02) {
+        // the pupil jumps between fixations rather than gliding
+        c.globalCompositeOperation = 'source-over';
+        const q = Math.floor(now / 1300 + hash(s + 3) * 7);
+        const lx = (hash(s * 3 + q) - .5) * r * .7, ly = (hash(s * 5 + q) - .5) * r * .5;
+        c.globalAlpha = e.l * eye;
+        c.beginPath(); c.arc(x + lx, y + ly, r * .5 * eye * (.8 + .2 * Math.sin(now / 600 + s)), 0, TAU);
+        c.fillStyle = 'rgba(2,8,3,.9)'; c.fill();
+        c.beginPath(); c.arc(x, y, r * 1.02, 0, TAU);
+        c.strokeStyle = 'rgba(215,255,190,.35)'; c.lineWidth = Math.max(.8, cs * .008); c.stroke();
+      }
     }
   }
   c.restore();
 }
 
 function drawShoggothLayer(now) {
-  const centre = (r, c) => [PAD + (c + .5) * cell, PAD + (r + .5) * cell];
   const cells = [];
-  ctx.save();
-  // bridges and lumps share one path so the mass has no seams
-  ctx.beginPath();
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const l = shogLevel(r, c);
-      if (l <= .03) continue;
-      const [x, y] = centre(r, c), k = key(r, c);
-      cells.push([x, y, l, k]);
-      for (const [dr, dc] of [[0, 1], [1, 0]]) {
-        const l2 = Math.min(l, shogLevel(r + dr, c + dc));
-        if (l2 <= .03) continue;
-        const w = cell * .88 * l2 * (1 + .05 * Math.sin(now / 400 + k));
-        if (dc) ctx.rect(x, y - w / 2, cell, w); else ctx.rect(x - w / 2, y, w, cell);
-      }
-      shogLumpPath(ctx, x, y, cell * .6 * ease.outBack(l), now, k * 1.7);
+      if (l > .03) cells.push({ r, c, l, k: key(r, c) + 1, x: PAD + (c + .5) * cell, y: PAD + (r + .5) * cell });
     }
   }
-  if (!cells.length) { ctx.restore(); return; }
-  ctx.lineJoin = 'round';
-  ctx.strokeStyle = SHOG_EDGE; ctx.lineWidth = Math.max(2, cell * .06); ctx.stroke();
-  ctx.globalAlpha = .95; ctx.fillStyle = SHOG_BODY; ctx.fill();
-  // an oily sheen that slides over each lump
-  for (const [x, y, l, k] of cells) {
-    const sx = x + Math.sin(now / 1100 + k) * cell * .15 - cell * .12, sy = y - cell * .16;
-    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, cell * .35);
-    g.addColorStop(0, 'rgba(150,160,165,.22)'); g.addColorStop(1, 'rgba(150,160,165,0)');
-    ctx.globalAlpha = l; ctx.fillStyle = g;
-    ctx.fillRect(sx - cell * .35, sy - cell * .35, cell * .7, cell * .7);
-  }
-  ctx.globalAlpha = 1;
-  for (const [x, y, l, k] of cells) drawShoggothFeatures(ctx, x, y, cell, l, now, k + 1);
-  ctx.restore();
+  if (cells.length) drawCongeries(ctx, cells, shogLevel, cell, now);
 }
 
-// A single lump, for the goal counter and the intro card.
+// A single mass, for the goal counter and the intro card.
 function drawShoggothIcon(c, cx, cy, size, now) {
-  c.save();
-  c.beginPath(); shogLumpPath(c, cx, cy, size * .5, now, 2);
-  c.strokeStyle = SHOG_EDGE; c.lineWidth = Math.max(1.5, size * .05); c.stroke();
-  c.fillStyle = SHOG_BODY; c.fill();
-  drawShoggothFeatures(c, cx, cy, size * .9, 1, now || 1800, 5);
-  c.restore();
+  drawCongeries(c, [{ r: 0, c: 0, l: 1, k: 5, x: cx, y: cy }], (r, col) => r === 0 && col === 0 ? 1 : 0, size * .85, now || 1800);
 }
 
 // ---------- Rendering: stones ----------
@@ -2146,19 +2144,6 @@ function drawAims(aims, alpha) {
   ctx.restore();
 }
 
-// Idle witch-lights flicker toward their target every few seconds.
-const WITCH_FLICKER = 2600;
-function drawWitchFlickers(now, skip) {
-  if (state !== 'playing' || busy) return;
-  const aims = [];
-  forEachPiece((p, r, c) => {
-    if (p.special !== 'dart' || p === skip || p.x !== c || p.y !== r) return;
-    const ph = ((now + hash(key(r, c)) * WITCH_FLICKER) % WITCH_FLICKER) / WITCH_FLICKER;
-    if (ph < .1) dartAims(p, r, c, 1).forEach(t => aims.push([r, c, t, 1 - ph / .1]));
-  });
-  for (const [r, c, t, a] of aims) drawAims([[r, c, t]], .55 * a);
-}
-
 function draw(now) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, boardW, boardH);
@@ -2205,7 +2190,6 @@ function draw(now) {
   ctx.restore();
   drawShoggothLayer(now);
   if (pv && pv.aims.length) drawAims(pv.aims, .8);
-  else drawWitchFlickers(now);
 
   for (const f of fx) {
     if (f.t < 0 || f.type === 'tendril') continue;
@@ -2450,7 +2434,7 @@ seedTaint(0);
 buildGoals();
 updateHUD();
 ovAction = () => startLevel(level);
-if (level > 1) $('ovText').textContent = `The seals weaken once more. Return to seal ${level}.`;
+if (level > 1) $('ovText').innerHTML = `The seals weaken once more.<br>Return to seal ${level}.`;
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(buildGoals).then(updateHUD);
 requestAnimationFrame(frame);
 

@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shoggoth Studies</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #e4f5ee; --muted: rgba(200, 235, 222, .72); --edge: rgba(125, 255, 200, .16); }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    font-family: "IM Fell English", Georgia, serif;
+    background: radial-gradient(ellipse at 50% 0%, #0b2421 0%, #04100f 45%, #020807 100%) fixed;
+  }
+  header { max-width: 1100px; margin: 0 auto; padding: 28px 16px 4px; text-align: center; }
+  h1 {
+    margin: 0 0 6px;
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 900;
+    font-size: 30px;
+    color: #c9ffe8;
+    text-shadow: 0 0 18px rgba(61, 255, 176, .4);
+  }
+  header p { margin: 0 auto; max-width: 660px; font-size: 19px; line-height: 1.5; color: #e2f2ec; }
+  .controls { display: flex; justify-content: center; gap: 10px; margin: 16px 0 4px; }
+  button {
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 700;
+    letter-spacing: .06em;
+    color: var(--ink);
+    border: 1px solid rgba(125, 255, 200, .3);
+    background: rgba(6, 24, 22, .6);
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 12px 16px 40px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+    gap: 18px;
+  }
+  .study {
+    background: linear-gradient(180deg, rgba(14, 44, 39, .55), rgba(4, 16, 14, .75));
+    border: 1px solid var(--edge);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .study h2 { margin: 0; font-family: Cinzel, Georgia, serif; font-size: 20px; letter-spacing: .05em; }
+  .study .tag {
+    margin: 2px 0 12px;
+    font-family: Cinzel, Georgia, serif;
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .board { display: block; width: 100%; cursor: pointer; touch-action: manipulation; }
+  .row { display: flex; gap: 14px; align-items: center; margin-top: 12px; }
+  .icons { flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .icons canvas { display: block; }
+  .pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 12px 3px 6px;
+    border: 1px solid var(--edge);
+    border-radius: 999px;
+    background: rgba(6, 24, 22, .32);
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .study p { margin: 0; font-size: 18px; line-height: 1.45; color: #e2f2ec; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Shoggoth Studies</h1>
+    <p>Four alternatives to the current blob. Each one is shown over the stones it engulfs, along with its intro-card and goal-pill icons. Tap an engulfed cell to free it and watch it recede.</p>
+    <div class="controls"><button id="reset">Re-engulf all</button></div>
+  </header>
+  <main id="studies"></main>
+
+<script>
+(() => {
+'use strict';
+
+const COLS = 6, ROWS = 5, PAD = 8, TAU = Math.PI * 2;
+const MASK = ['.XX...', 'XXXX..', '.XXX..', '..X..X', '....XX'];
+const STONES = [
+  { shape: 'circle',   light: '#a9ecd6', fill: '#3e9c86', dark: '#103b33' },
+  { shape: 'square',   light: '#fff6e0', fill: '#cdbf9c', dark: '#5f5440' },
+  { shape: 'star',     light: '#ffb8a6', fill: '#c4543f', dark: '#521810' },
+  { shape: 'diamond',  light: '#c4aef0', fill: '#5d3f8f', dark: '#1c0f31' },
+  { shape: 'hex',      light: '#d4f7a4', fill: '#7aa83e', dark: '#243f12' },
+  { shape: 'triangle', light: '#ffe6a8', fill: '#c9932f', dark: '#563809' },
+];
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const clamp01 = v => Math.max(0, Math.min(1, v));
+const smooth = (a, b, v) => { const t = clamp01((v - a) / (b - a)); return t * t * (3 - 2 * t); };
+const outBack = t => { const s = 1.70158; t -= 1; return t * t * ((s + 1) * t + s) + 1; };
+const dpr = Math.min(2, window.devicePixelRatio || 1);
+
+// ---------- board and stones (simplified from the game) ----------
+function roundRectPath(c, x, y, w, h, r) {
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function shapePath(c, shape, cx, cy, r) {
+  c.beginPath();
+  switch (shape) {
+    case 'circle': c.arc(cx, cy, r * .9, 0, TAU); break;
+    case 'square': roundRectPath(c, cx - r * .8, cy - r * .8, r * 1.6, r * 1.6, r * .22); break;
+    case 'star':
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + i * Math.PI / 5, rad = i % 2 ? r * .52 : r * 1.02;
+        const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad + r * .06;
+        i ? c.lineTo(px, py) : c.moveTo(px, py);
+      }
+      c.closePath();
+      break;
+    case 'diamond':
+      c.moveTo(cx, cy - r); c.lineTo(cx + r * .78, cy); c.lineTo(cx, cy + r); c.lineTo(cx - r * .78, cy);
+      c.closePath();
+      break;
+    case 'hex':
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3, px = cx + Math.cos(a) * r * .92, py = cy + Math.sin(a) * r * .92;
+        i ? c.lineTo(px, py) : c.moveTo(px, py);
+      }
+      c.closePath();
+      break;
+    case 'triangle':
+      c.moveTo(cx, cy - r * .92); c.lineTo(cx + r * .95, cy + r * .72); c.lineTo(cx - r * .95, cy + r * .72);
+      c.closePath();
+      break;
+  }
+}
+
+function drawStone(c, st, cx, cy, r) {
+  shapePath(c, st.shape, cx, cy + r * .1, r);
+  c.fillStyle = 'rgba(0,0,0,.45)'; c.fill();
+  shapePath(c, st.shape, cx, cy, r);
+  const g = c.createLinearGradient(cx - r * .4, cy - r, cx + r * .4, cy + r);
+  g.addColorStop(0, st.light); g.addColorStop(.38, st.fill); g.addColorStop(1, st.dark);
+  c.fillStyle = g; c.fill();
+  c.lineJoin = 'round'; c.lineWidth = Math.max(1, r * .07); c.strokeStyle = st.dark; c.stroke();
+}
+
+function drawBoard(c, cs, W, H) {
+  c.beginPath(); roundRectPath(c, 0, 0, W, H, 14);
+  c.fillStyle = 'rgba(3,12,12,.55)'; c.fill();
+  c.strokeStyle = 'rgba(125,255,200,.14)'; c.lineWidth = 1.5; c.stroke();
+  for (let r = 0; r < ROWS; r++) {
+    for (let col = 0; col < COLS; col++) {
+      const x = PAD + col * cs + 2, y = PAD + r * cs + 2, w = cs - 4;
+      c.beginPath(); roundRectPath(c, x, y, w, w, cs * .14);
+      c.fillStyle = (r + col) % 2 ? 'rgba(140,190,175,.05)' : 'rgba(140,190,175,.1)';
+      c.fill();
+      c.strokeStyle = 'rgba(0,0,0,.35)'; c.lineWidth = 1; c.stroke();
+      drawStone(c, STONES[Math.floor(hash(r * 31 + col * 7 + 3) * 6)], PAD + (col + .5) * cs, PAD + (r + .5) * cs, cs * .42);
+    }
+  }
+}
+
+// ---------- shared mass outline ----------
+// A lump per cell plus a lump at every join (and at the centre of every 2x2 block), all
+// wound the same way in one path so the mass reads as one body with no straight edges.
+function lump(c, cx, cy, R, now, seed, wob) {
+  const N = 28;
+  for (let i = 0; i <= N; i++) {
+    const a = i / N * TAU;
+    let k = 1;
+    for (const [f, amp, per] of wob) k += amp * Math.sin(f * a + seed * f + now / per);
+    const x = cx + Math.cos(a) * R * k, y = cy + Math.sin(a) * R * k;
+    i ? c.lineTo(x, y) : c.moveTo(x, y);
+  }
+  c.closePath();
+}
+
+function massPath(c, cells, lvl, cs, now, R, wob) {
+  c.beginPath();
+  for (const e of cells) {
+    lump(c, e.x, e.y, cs * R * outBack(e.l), now, e.k * 1.7, wob);
+    const lr = Math.min(e.l, lvl(e.r, e.c + 1)), ld = Math.min(e.l, lvl(e.r + 1, e.c));
+    if (lr > .03) lump(c, e.x + cs / 2, e.y, cs * R * .78 * lr, now, e.k * 2.3 + 1, wob);
+    if (ld > .03) lump(c, e.x, e.y + cs / 2, cs * R * .78 * ld, now, e.k * 2.9 + 2, wob);
+    const l4 = Math.min(lr, ld, lvl(e.r + 1, e.c + 1));
+    if (l4 > .03) lump(c, e.x + cs / 2, e.y + cs / 2, cs * R * .85 * l4, now, e.k * 3.1 + 3, wob);
+  }
+}
+
+// an almond, the shape of a real eye or a slit mouth
+function almond(c, x, y, w, h) {
+  c.beginPath();
+  c.moveTo(x - w, y);
+  c.quadraticCurveTo(x, y - h * 2, x + w, y);
+  c.quadraticCurveTo(x, y + h * 2, x - w, y);
+  c.closePath();
+}
+function almondV(c, x, y, w, h) {
+  c.beginPath();
+  c.moveTo(x, y - h);
+  c.quadraticCurveTo(x + w * 2, y, x, y + h);
+  c.quadraticCurveTo(x - w * 2, y, x, y - h);
+  c.closePath();
+}
+
+// wet highlights along the tops of exposed surfaces
+function upperSheen(c, cells, lvl, cs, now, color) {
+  c.lineCap = 'round';
+  for (const e of cells) {
+    if (lvl(e.r - 1, e.c) > .5) continue;
+    c.globalAlpha = e.l;
+    c.beginPath(); c.arc(e.x, e.y + cs * .12, cs * .46, -Math.PI * .78, -Math.PI * .42);
+    c.strokeStyle = color; c.lineWidth = cs * .035; c.stroke();
+    c.beginPath(); c.arc(e.x - cs * .17 + Math.sin(now / 1800 + e.k) * cs * .03, e.y - cs * .27, cs * .022, 0, TAU);
+    c.fillStyle = 'rgba(240,245,255,.45)'; c.fill();
+  }
+  c.globalAlpha = 1;
+}
+
+// ---------- A. Congeries ----------
+function drawCongeries(c, cells, lvl, cs, now) {
+  c.save();
+  // a dark body underneath, so no stone shows between bubbles
+  massPath(c, cells, lvl, cs, now, .5, [[3, .05, 1500], [5, .04, 1100]]);
+  c.fillStyle = 'rgba(3,6,5,.92)'; c.fill();
+
+  const bs = [];
+  for (const e of cells) {
+    for (let i = 0; i < 7; i++) {
+      const s = e.k * 19 + i * 7.3;
+      bs.push({ x: e.x + (hash(s) - .5) * cs * .66, y: e.y + (hash(s + 1) - .5) * cs * .66, r: cs * (.14 + .2 * hash(s + 2)), s, l: e.l });
+    }
+    const lr = Math.min(e.l, lvl(e.r, e.c + 1)), ld = Math.min(e.l, lvl(e.r + 1, e.c));
+    for (const [l2, dx, dy] of [[lr, .5, 0], [ld, 0, .5]]) {
+      if (l2 <= .03) continue;
+      for (let i = 0; i < 2; i++) {
+        const s = e.k * 23 + dx * 50 + i * 13;
+        bs.push({ x: e.x + dx * cs + (hash(s) - .5) * cs * .3, y: e.y + dy * cs + (hash(s + 1) - .5) * cs * .3, r: cs * (.16 + .12 * hash(s + 2)), s, l: l2 });
+      }
+    }
+  }
+  bs.sort((a, b) => b.r - a.r);
+  for (const b of bs) {
+    const br = b.r * outBack(b.l) * (1 + .12 * Math.sin(now / (900 + 700 * hash(b.s + 3)) + hash(b.s + 4) * TAU));
+    if (br < .5) continue;
+    const bx = b.x + Math.sin(now / 1900 + b.s) * cs * .025, by = b.y + Math.cos(now / 2300 + b.s) * cs * .025;
+    c.globalAlpha = clamp01(b.l * 1.4);
+    const g = c.createRadialGradient(bx - br * .2, by - br * .25, br * .1, bx, by, br);
+    g.addColorStop(0, '#0b100e'); g.addColorStop(.6, '#0e1713');
+    g.addColorStop(.86, 'rgba(64,118,84,.55)'); g.addColorStop(1, 'rgba(30,60,40,0)');
+    c.fillStyle = g; c.beginPath(); c.arc(bx, by, br, 0, TAU); c.fill();
+    c.beginPath(); c.ellipse(bx - br * .38, by - br * .42, br * .2, br * .09, -.7, 0, TAU);
+    c.fillStyle = 'rgba(205,235,215,.2)'; c.fill();
+  }
+
+  // pustules of greenish light that form into eyes and un-form again
+  for (const e of cells) {
+    for (let i = 0; i < 3; i++) {
+      const P = 3400 + hash(e.k * 5 + i) * 2600, t = now + hash(e.k * 3 + i * 17) * P;
+      const n = Math.floor(t / P), ph = (t % P) / P;
+      const form = smooth(0, .22, ph) * (1 - smooth(.78, 1, ph));
+      if (form <= .01) continue;
+      const eye = smooth(.2, .36, ph) * (1 - smooth(.62, .8, ph));
+      const s = e.k * 31 + i * 11 + n * 17;
+      const x = e.x + (hash(s) - .5) * cs * .6, y = e.y + (hash(s + 1) - .5) * cs * .6;
+      const r = cs * (.035 + .05 * hash(s + 2));
+      c.globalCompositeOperation = 'lighter';
+      c.globalAlpha = form * e.l;
+      const g = c.createRadialGradient(x, y, 0, x, y, r * 2.6);
+      g.addColorStop(0, 'rgba(190,255,150,.9)'); g.addColorStop(.3, 'rgba(110,215,90,.5)'); g.addColorStop(1, 'rgba(30,90,30,0)');
+      c.fillStyle = g; c.fillRect(x - r * 2.6, y - r * 2.6, r * 5.2, r * 5.2);
+      if (eye > .02) {
+        c.globalCompositeOperation = 'source-over';
+        const q = Math.floor(now / 1300 + hash(s + 3) * 7);
+        const lx = (hash(s * 3 + q) - .5) * r * .7, ly = (hash(s * 5 + q) - .5) * r * .5;
+        c.globalAlpha = e.l * eye;
+        c.beginPath(); c.arc(x + lx, y + ly, r * .5 * eye * (.8 + .2 * Math.sin(now / 600 + s)), 0, TAU);
+        c.fillStyle = 'rgba(2,8,3,.9)'; c.fill();
+        c.beginPath(); c.arc(x, y, r * 1.02, 0, TAU);
+        c.strokeStyle = 'rgba(215,255,190,.35)'; c.lineWidth = Math.max(.8, cs * .008); c.stroke();
+      }
+    }
+  }
+  c.restore();
+}
+
+// ---------- B. Tar ----------
+function tarEye(c, x, y, e, open, alpha, now, s) {
+  const w = e, hMax = e * .58, h = hMax * open;
+  c.save();
+  c.globalAlpha = alpha;
+  // the eye sits in a recess in the tar
+  const rg = c.createRadialGradient(x, y, 0, x, y, e * 1.5);
+  rg.addColorStop(0, 'rgba(0,0,0,.7)'); rg.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = rg; c.fillRect(x - e * 1.5, y - e * 1.5, e * 3, e * 3);
+  if (h > e * .03) {
+    c.save();
+    almond(c, x, y, w, h); c.clip();
+    const sg = c.createRadialGradient(x, y, e * .1, x, y, e * 1.05);
+    sg.addColorStop(0, '#d9d1b8'); sg.addColorStop(.7, '#a39a80'); sg.addColorStop(1, '#4b4436');
+    c.fillStyle = sg; c.fillRect(x - w, y - hMax, w * 2, hMax * 2);
+    // bloodshot
+    c.strokeStyle = 'rgba(150,38,38,.5)'; c.lineWidth = Math.max(.6, e * .035);
+    for (let i = 0; i < 4; i++) {
+      const a = hash(s + i) * TAU, sx = x + Math.cos(a) * w * .95, sy = y + Math.sin(a) * hMax * .9;
+      c.beginPath(); c.moveTo(sx, sy);
+      c.quadraticCurveTo(sx + (x - sx) * .3 + e * .15 * (hash(s + i + 9) - .5), sy + (y - sy) * .5, sx + (x - sx) * .55, sy + (y - sy) * .55);
+      c.stroke();
+    }
+    // the iris jumps between fixations rather than gliding
+    const q = Math.floor(now / 1400 + hash(s) * 5);
+    const ix = x + (hash(s * 3 + q) - .5) * e * .6, iy = y + (hash(s * 5 + q) - .5) * e * .25, ir = e * .46;
+    const ig = c.createRadialGradient(ix, iy, ir * .15, ix, iy, ir);
+    ig.addColorStop(0, '#e0bd45'); ig.addColorStop(.55, '#9a6a14'); ig.addColorStop(1, '#2a1904');
+    c.beginPath(); c.arc(ix, iy, ir, 0, TAU); c.fillStyle = ig; c.fill();
+    c.beginPath();
+    for (let i = 0; i < 14; i++) {
+      const a = i / 14 * TAU;
+      c.moveTo(ix + Math.cos(a) * ir * .35, iy + Math.sin(a) * ir * .35);
+      c.lineTo(ix + Math.cos(a) * ir * .95, iy + Math.sin(a) * ir * .95);
+    }
+    c.strokeStyle = 'rgba(40,22,4,.4)'; c.lineWidth = Math.max(.5, e * .02); c.stroke();
+    const pd = .8 + .2 * Math.sin(now / 900 + s);
+    c.beginPath(); c.ellipse(ix, iy, ir * .62 * pd, ir * .2 * pd, 0, 0, TAU);
+    c.fillStyle = '#030302'; c.fill();
+    // the upper lid shades the eyeball
+    const lg = c.createLinearGradient(0, y - h, 0, y + h * .2);
+    lg.addColorStop(0, 'rgba(0,0,0,.6)'); lg.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = lg; c.fillRect(x - w, y - hMax, w * 2, hMax * 1.4);
+    c.beginPath(); c.ellipse(ix - ir * .35, iy - ir * .4, ir * .16, ir * .1, -.5, 0, TAU);
+    c.fillStyle = 'rgba(255,255,255,.75)'; c.fill();
+    c.restore();
+  }
+  // a moist lid edge; when shut it is just a seam in the tar
+  almond(c, x, y, w * 1.03, Math.max(h, e * .04) + e * .03);
+  c.strokeStyle = 'rgba(120,120,130,.35)'; c.lineWidth = Math.max(.7, e * .05); c.stroke();
+  c.restore();
+}
+
+function tarMouth(c, x, y, w, open, alpha, s) {
+  c.save();
+  c.globalAlpha = alpha;
+  const h = w * (.05 + .2 * open);
+  almond(c, x, y, w, h);
+  const g = c.createLinearGradient(0, y - h, 0, y + h);
+  g.addColorStop(0, '#000'); g.addColorStop(.6, '#1a0507'); g.addColorStop(1, '#3a0c10');
+  c.fillStyle = g; c.fill();
+  if (open > .3) {
+    // strands of slime across the gap
+    c.beginPath();
+    for (let i = 0; i < 2; i++) {
+      const sx = x + (hash(s + i) - .5) * w * 1.1;
+      c.moveTo(sx, y - h * .8); c.quadraticCurveTo(sx + w * .05, y + h * .3, sx + w * .02, y + h * .8);
+    }
+    c.strokeStyle = `rgba(170,170,180,${.4 * (open - .3)})`; c.lineWidth = Math.max(.5, w * .025); c.stroke();
+  }
+  c.beginPath(); c.moveTo(x - w * .7, y + h * .75); c.quadraticCurveTo(x, y + h * 2.1, x + w * .7, y + h * .75);
+  c.strokeStyle = 'rgba(210,215,225,.22)'; c.lineWidth = Math.max(.6, w * .04); c.stroke();
+  c.restore();
+}
+
+function drawTar(c, cells, lvl, cs, now, H) {
+  const wob = [[3, .035, 2400], [5, .03, 1700], [9, .015, 1300]];
+  const body = () => {
+    massPath(c, cells, lvl, cs, now, .58, wob);
+    // slow drips hang from the underside
+    for (const e of cells) {
+      if (lvl(e.r + 1, e.c) > .03) continue;
+      for (let i = 0; i < 2; i++) {
+        const s = e.k * 7 + i * 13;
+        if (i && hash(s) < .5) continue;
+        const x = e.x + (hash(s + 1) - .5) * cs * .5, w = cs * (.035 + .03 * hash(s + 2)) * e.l;
+        const L = cs * (.1 + .22 * (.5 + .5 * Math.sin(now / (2600 + 1400 * hash(s + 3)) + s))) * e.l, y0 = e.y + cs * .48;
+        c.moveTo(x + w * .7, y0 + L * .5); c.ellipse(x, y0 + L * .5, w * .7, L * .5 + w * .3, 0, 0, TAU);
+        c.moveTo(x + w, y0 + L); c.ellipse(x, y0 + L, w, w * 1.15, 0, 0, TAU);
+      }
+    }
+  };
+  c.save();
+  c.save(); c.translate(0, cs * .06); body(); c.fillStyle = 'rgba(0,0,0,.45)'; c.fill(); c.restore();
+  body();
+  const g = c.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#1d1e23'); g.addColorStop(1, '#060607');
+  c.fillStyle = g; c.fill();
+  c.save(); c.clip();
+  // an oil-slick film sliding over the surface
+  c.globalCompositeOperation = 'screen';
+  for (const e of cells) {
+    const hue = (190 + 210 * (.5 + .5 * Math.sin(now / 3200 + e.k * 1.3))) % 360;
+    const x = e.x + Math.sin(now / 2100 + e.k) * cs * .25, y = e.y + Math.cos(now / 2700 + e.k * 2) * cs * .2;
+    const gr = c.createRadialGradient(x, y, 0, x, y, cs * .55);
+    gr.addColorStop(0, `hsla(${hue},55%,42%,${.24 * e.l})`); gr.addColorStop(1, `hsla(${hue},55%,42%,0)`);
+    c.fillStyle = gr; c.fillRect(x - cs * .55, y - cs * .55, cs * 1.1, cs * 1.1);
+  }
+  c.globalCompositeOperation = 'source-over';
+  upperSheen(c, cells, lvl, cs, now, 'rgba(225,230,240,.22)');
+  c.restore();
+
+  for (const e of cells) {
+    for (let i = 0; i < 2; i++) {
+      const P = 5000 + hash(e.k * 5 + i) * 3000, t = now + hash(e.k * 3 + i * 17) * P;
+      const n = Math.floor(t / P), ph = (t % P) / P;
+      const alpha = smooth(0, .12, ph) * (1 - smooth(.9, 1, ph)) * e.l;
+      if (alpha <= .01) continue;
+      let open = smooth(.12, .25, ph) * (1 - smooth(.8, .9, ph));
+      const b = (ph * 3) % 1;
+      if (b > .92) open *= Math.abs(Math.cos((b - .92) / .08 * Math.PI));
+      const s = e.k * 31 + i * 11 + n * 17, sz = hash(s + 2);
+      tarEye(c, e.x + (hash(s) - .5) * cs * .5, e.y + (hash(s + 1) - .5) * cs * .5, cs * (.07 + .12 * sz * sz), open, alpha, now, s);
+    }
+    if (hash(e.k * 41) > .55) {
+      const s = e.k * 43, open = (.5 + .5 * Math.sin(now / 1700 + s)) ** 2;
+      tarMouth(c, e.x + (hash(s) - .5) * cs * .3, e.y + cs * .2, cs * (.12 + .05 * hash(s + 1)), open, e.l, s);
+    }
+  }
+  c.restore();
+}
+
+// ---------- C. Flesh ----------
+function orifice(c, x, y, R, d, alpha, s) {
+  c.save();
+  c.globalAlpha = alpha;
+  const rg = c.createRadialGradient(x, y, 0, x, y, R * 1.3);
+  rg.addColorStop(0, 'rgba(90,50,62,.55)'); rg.addColorStop(1, 'rgba(90,50,62,0)');
+  c.fillStyle = rg; c.fillRect(x - R * 1.3, y - R * 1.3, R * 2.6, R * 2.6);
+  const hole = R * (.08 + .42 * d);
+  // puckered folds converging on the opening
+  c.beginPath();
+  for (let i = 0; i < 9; i++) {
+    const a = i / 9 * TAU + hash(s) * TAU;
+    c.moveTo(x + Math.cos(a) * R, y + Math.sin(a) * R);
+    c.quadraticCurveTo(x + Math.cos(a + .5) * R * .6, y + Math.sin(a + .5) * R * .6, x + Math.cos(a + .7) * hole, y + Math.sin(a + .7) * hole);
+  }
+  c.strokeStyle = 'rgba(14,5,9,.65)'; c.lineWidth = Math.max(.7, R * .07); c.lineCap = 'round'; c.stroke();
+  const hg = c.createRadialGradient(x, y, 0, x, y, hole);
+  hg.addColorStop(0, '#000'); hg.addColorStop(.7, '#12030a'); hg.addColorStop(1, '#4a1420');
+  c.beginPath(); c.arc(x, y, hole, 0, TAU); c.fillStyle = hg; c.fill();
+  c.restore();
+}
+
+// glossy black eyes in a cluster, like a spider's, that shut and open independently
+function beadCluster(c, x, y, cs, n, now, s, alpha) {
+  const q = Math.floor(now / 1700 + hash(s) * 4), gx = hash(s * 7 + q) - .5, gy = hash(s * 11 + q) - .5;
+  c.save();
+  c.globalAlpha = alpha;
+  for (let i = 0; i < n; i++) {
+    const a = i / n * TAU + hash(s + i) * .8, d = i ? cs * .065 * (1 + hash(s + i + 3)) : 0;
+    const bx = x + Math.cos(a) * d, by = y + Math.sin(a) * d * .8;
+    const r0 = cs * (i ? .022 + .018 * hash(s + i + 5) : .045);
+    const P = 2600 + hash(s + i * 9) * 3000, ph = ((now + hash(s + i * 13) * P) % P) / P;
+    const open = ph > .9 ? Math.abs(Math.cos((ph - .9) / .1 * Math.PI)) : 1;
+    c.beginPath(); c.arc(bx, by, r0 * 1.35, 0, TAU); c.fillStyle = 'rgba(70,38,48,.85)'; c.fill();
+    if (open > .08) {
+      c.save();
+      c.beginPath(); c.ellipse(bx, by, r0, r0 * open, 0, 0, TAU); c.clip();
+      const bg = c.createRadialGradient(bx - r0 * .3, by - r0 * .3, 0, bx, by, r0);
+      bg.addColorStop(0, '#2a2a30'); bg.addColorStop(1, '#000');
+      c.fillStyle = bg; c.fillRect(bx - r0, by - r0, r0 * 2, r0 * 2);
+      c.beginPath(); c.arc(bx - r0 * .3 + gx * r0 * .3, by - r0 * .35 + gy * r0 * .3, r0 * .26, 0, TAU);
+      c.fillStyle = 'rgba(255,255,255,.8)'; c.fill();
+      c.restore();
+    } else {
+      c.beginPath(); c.moveTo(bx - r0, by); c.lineTo(bx + r0, by);
+      c.strokeStyle = 'rgba(15,6,9,.8)'; c.lineWidth = Math.max(.6, r0 * .2); c.stroke();
+    }
+  }
+  c.restore();
+}
+
+function drawFlesh(c, cells, lvl, cs, now, H, W) {
+  const wob = [[2, .04, 1900], [4, .035, 1300], [6, .02, 900]];
+  c.save();
+  c.save(); c.translate(0, cs * .06); massPath(c, cells, lvl, cs, now, .6, wob); c.fillStyle = 'rgba(0,0,0,.45)'; c.fill(); c.restore();
+  massPath(c, cells, lvl, cs, now, .6, wob);
+  const g = c.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#3b2b32'); g.addColorStop(1, '#170f13');
+  c.fillStyle = g; c.fill();
+  c.save(); c.clip();
+  // mottled skin
+  for (const e of cells) {
+    for (let i = 0; i < 4; i++) {
+      const s = e.k * 13 + i * 5;
+      const x = e.x + (hash(s) - .5) * cs * .9, y = e.y + (hash(s + 1) - .5) * cs * .9, r = cs * (.1 + .12 * hash(s + 2));
+      const gr = c.createRadialGradient(x, y, 0, x, y, r);
+      gr.addColorStop(0, hash(s + 3) > .5 ? 'rgba(12,4,8,.4)' : 'rgba(110,70,85,.18)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+      c.fillStyle = gr; c.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+  }
+  // veins that swell with a heartbeat
+  const ph = (now % 1150) / 1150, hb = Math.exp(-(((ph - .04) / .05) ** 2)) + .6 * Math.exp(-(((ph - .22) / .05) ** 2));
+  c.lineCap = 'round';
+  for (const e of cells) {
+    for (let i = 0; i < 2; i++) {
+      const s = e.k * 17 + i * 29;
+      let x = e.x + (hash(s) - .5) * cs * .8, y = e.y + (hash(s + 1) - .5) * cs * .8, a = hash(s + 2) * TAU;
+      c.beginPath(); c.moveTo(x, y);
+      for (let j = 0; j < 5; j++) {
+        a += (hash(s + j * 3 + 5) - .5) * 1.4;
+        const nx = x + Math.cos(a) * cs * .13, ny = y + Math.sin(a) * cs * .13;
+        c.quadraticCurveTo(x + Math.cos(a + .6) * cs * .08, y + Math.sin(a + .6) * cs * .08, nx, ny);
+        x = nx; y = ny;
+      }
+      c.strokeStyle = `rgba(${110 + 60 * hb | 0},22,40,${(.35 + .3 * hb) * e.l})`;
+      c.lineWidth = cs * (.016 + .006 * hb); c.stroke();
+    }
+  }
+  // a slow peristaltic wave rolling across the mass
+  const span = W * .8 + H * .6, p = ((now / 3200) % 1) * (span + cs * 2) - cs;
+  const wg = c.createLinearGradient(.8 * (p - cs), .6 * (p - cs), .8 * (p + cs), .6 * (p + cs));
+  wg.addColorStop(0, 'rgba(160,120,135,0)'); wg.addColorStop(.5, 'rgba(160,120,135,.16)'); wg.addColorStop(1, 'rgba(160,120,135,0)');
+  c.fillStyle = wg; c.fillRect(0, 0, W, H);
+  upperSheen(c, cells, lvl, cs, now, 'rgba(240,210,220,.18)');
+  c.restore();
+
+  for (const e of cells) {
+    const s = e.k * 37;
+    if (hash(s) > .25) beadCluster(c, e.x + (hash(s + 1) - .5) * cs * .4, e.y + (hash(s + 2) - .5) * cs * .4, cs, 3 + Math.floor(hash(s + 3) * 4), now, s, e.l);
+    if (hash(s + 4) > .5) {
+      const d = Math.max(0, Math.sin(now / (1700 + 900 * hash(s + 5)) + s)) ** 2;
+      orifice(c, e.x + (hash(s + 6) - .5) * cs * .5, e.y + (hash(s + 7) - .5) * cs * .5, cs * .11, d, e.l, s);
+    }
+  }
+  c.restore();
+}
+
+// ---------- D. Ink ----------
+const SIDES = [[-1, 0, -Math.PI / 2], [1, 0, Math.PI / 2], [0, -1, Math.PI], [0, 1, 0]];
+function drawInk(c, cells, lvl, cs, now) {
+  c.save();
+  // soft smoke, darkest at the heart
+  for (const e of cells) {
+    for (let i = 0; i < 3; i++) {
+      const s = e.k * 7 + i * 3;
+      const x = e.x + Math.sin(now / (1800 + hash(s) * 900) + s) * cs * .12, y = e.y + Math.cos(now / (2100 + hash(s + 1) * 900) + s) * cs * .12;
+      const r = cs * (.62 + .15 * hash(s + 2)) * outBack(e.l);
+      if (r < .5) continue;
+      const g = c.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(1,2,4,${.75 * e.l})`); g.addColorStop(.6, `rgba(1,2,4,${.45 * e.l})`); g.addColorStop(1, 'rgba(1,2,4,0)');
+      c.fillStyle = g; c.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+  }
+  // tendrils curl out from every exposed side
+  c.lineCap = 'round';
+  for (const e of cells) {
+    for (const [dr, dc, ang] of SIDES) {
+      if (lvl(e.r + dr, e.c + dc) > .3) continue;
+      for (let j = 0; j < 2; j++) {
+        const s = e.k * 13 + (dr + 2) * 5 + (dc + 2) * 3 + j * 17, off = (hash(s) - .5) * cs * .6;
+        let x = e.x + Math.cos(ang) * cs * .38 - Math.sin(ang) * off, y = e.y + Math.sin(ang) * cs * .38 + Math.cos(ang) * off;
+        let a = ang;
+        const L = cs * (.35 + .3 * hash(s + 1)) * e.l, N = 8, step = L / N;
+        for (let i = 0; i < N; i++) {
+          const f = i / N;
+          a += Math.sin(now / (1300 + hash(s + 2) * 900) + s + f * 4) * .35;
+          const nx = x + Math.cos(a) * step, ny = y + Math.sin(a) * step;
+          c.beginPath(); c.moveTo(x, y); c.lineTo(nx, ny);
+          c.strokeStyle = `rgba(1,2,4,${.7 * (1 - f) * e.l})`; c.lineWidth = cs * .08 * (1 - f) + .5; c.stroke();
+          x = nx; y = ny;
+        }
+      }
+    }
+  }
+  massPath(c, cells, lvl, cs, now, .5, [[3, .06, 1300], [6, .04, 800]]);
+  c.fillStyle = 'rgba(2,3,6,.8)'; c.fill();
+  // currents turning deep inside
+  c.save(); c.clip();
+  for (const e of cells) {
+    for (let i = 0; i < 2; i++) {
+      const s = e.k * 11 + i * 5, a0 = now / (2600 + hash(s) * 1500) * (hash(s + 1) > .5 ? 1 : -1) + s;
+      c.beginPath(); c.arc(e.x + (hash(s + 3) - .5) * cs * .3, e.y + (hash(s + 4) - .5) * cs * .3, cs * (.15 + .2 * hash(s + 2)), a0, a0 + 2.2);
+      c.strokeStyle = `rgba(80,105,140,${.12 * e.l})`; c.lineWidth = cs * .03; c.stroke();
+    }
+  }
+  c.restore();
+
+  // pairs of cold points of light, and now and then a great slit
+  for (const e of cells) {
+    for (let i = 0; i < 2; i++) {
+      const P = 3000 + hash(e.k * 9 + i) * 3000, t = now + hash(e.k * 4 + i * 7) * P;
+      const n = Math.floor(t / P), ph = (t % P) / P;
+      const vis = smooth(0, .15, ph) * (1 - smooth(.85, 1, ph)) * e.l;
+      if (vis < .01) continue;
+      const b = (ph * 4) % 1, open = b > .93 ? Math.abs(Math.cos((b - .93) / .07 * Math.PI)) : 1;
+      const s = e.k * 37 + i * 13 + n * 7;
+      const x = e.x + (hash(s) - .5) * cs * .5, y = e.y + (hash(s + 1) - .5) * cs * .5;
+      const sp = cs * (.045 + .03 * hash(s + 2)), r = cs * (.022 + .012 * hash(s + 3)), tilt = (hash(s + 4) - .5) * .5;
+      const col = hash(s + 5) > .75 ? '215,235,140' : '200,235,255';
+      for (const sg of [-1, 1]) {
+        const px = x + Math.cos(tilt) * sp * sg / 2, py = y + Math.sin(tilt) * sp * sg / 2;
+        c.globalCompositeOperation = 'lighter';
+        c.globalAlpha = vis;
+        const g = c.createRadialGradient(px, py, 0, px, py, r * 3);
+        g.addColorStop(0, `rgba(${col},.55)`); g.addColorStop(1, `rgba(${col},0)`);
+        c.fillStyle = g; c.fillRect(px - r * 3, py - r * 3, r * 6, r * 6);
+        if (open > .08) {
+          c.beginPath(); c.ellipse(px, py, r * .55, r * .55 * open, tilt, 0, TAU);
+          c.fillStyle = `rgba(${col},.95)`; c.fill();
+        }
+      }
+    }
+    if (hash(e.k * 53) > .72) {
+      const P = 7000, ph = ((now + hash(e.k * 59) * P) % P) / P;
+      const open = smooth(.1, .4, ph) * (1 - smooth(.7, .9, ph));
+      if (open > .01) {
+        const x = e.x + (hash(e.k * 61) - .5) * cs * .3, y = e.y, w = cs * .045 * open, h = cs * .19;
+        c.globalCompositeOperation = 'lighter';
+        c.globalAlpha = open * e.l;
+        const g = c.createRadialGradient(x, y, 0, x, y, h * 1.4);
+        g.addColorStop(0, 'rgba(255,150,40,.35)'); g.addColorStop(1, 'rgba(255,150,40,0)');
+        c.fillStyle = g; c.fillRect(x - h * 1.4, y - h * 1.4, h * 2.8, h * 2.8);
+        almondV(c, x, y, w, h);
+        const sg = c.createRadialGradient(x, y, 0, x, y, h);
+        sg.addColorStop(0, 'rgba(255,215,110,.95)'); sg.addColorStop(1, 'rgba(170,60,10,.7)');
+        c.fillStyle = sg; c.fill();
+        c.globalCompositeOperation = 'source-over';
+        almondV(c, x, y, w * .25, h * .85); c.fillStyle = '#050100'; c.fill();
+      }
+    }
+  }
+  c.restore();
+}
+
+// ---------- the studies ----------
+const DESIGNS = [
+  { name: 'Congeries', tag: 'After the text: “a shapeless congeries of protoplasmic bubbles”', draw: drawCongeries,
+    text: 'Foam made of near-black bubbles, faintly self-luminous at their membranes, swelling against one another. The eyes are not organs. They are pustules of green light that gather, look about, then come apart again.' },
+  { name: 'Tar', tag: 'Oil-slick realism', draw: drawTar,
+    text: 'One heavy, glossy mass with no outline, an oily film sliding over it, and slow drips hanging underneath. Its eyes are almond-shaped, goat-pupilled and bloodshot, and they flick between fixations. Lipless slits part with strands of slime across them.' },
+  { name: 'Flesh', tag: 'Bruised meat, beating', draw: drawFlesh,
+    text: 'Mottled grey-violet hide with veins that swell on a double heartbeat and a slow peristaltic ripple. The eyes are clusters of glossy black beads, like a spider’s, that shut one at a time. Puckered orifices dilate and close.' },
+  { name: 'Ink', tag: 'A hole in the water', draw: drawInk,
+    text: 'Smoke rather than skin: a soft black void with tendrils curling from its edges and currents turning deep inside. The only sign of life is pairs of cold pinpricks blinking in the dark, and now and then a great amber slit that opens slowly.' },
+];
+
+const studies = [], icons = [];
+const main = document.getElementById('studies');
+
+for (const d of DESIGNS) {
+  const el = document.createElement('section');
+  el.className = 'study';
+  el.innerHTML = `<h2>${d.name}</h2><div class="tag">${d.tag}</div><canvas class="board"></canvas>
+    <div class="row"><div class="icons"><canvas width="96" height="96"></canvas><div class="pill"><canvas></canvas>12 left</div></div><p>${d.text}</p></div>`;
+  main.appendChild(el);
+  const board = el.querySelector('.board'), [big, small] = el.querySelectorAll('.icons canvas');
+  const st = { d, board, ctx: board.getContext('2d'), cs: 0, W: 0, H: 0, fill: [], target: [] };
+  engulfAll(st, true);
+  board.addEventListener('pointerdown', ev => {
+    const r0 = board.getBoundingClientRect();
+    const col = Math.floor((ev.clientX - r0.left - PAD) / st.cs), r = Math.floor((ev.clientY - r0.top - PAD) / st.cs);
+    if (r >= 0 && r < ROWS && col >= 0 && col < COLS) st.target[r][col] = 0;
+  });
+  studies.push(st);
+  icons.push({ d, canvas: big, size: 96 }, { d, canvas: small, size: 26 });
+}
+
+function engulfAll(st, instant) {
+  st.target = MASK.map(row => [...row].map(ch => ch === 'X' ? 1 : 0));
+  if (instant) st.fill = st.target.map(row => row.slice());
+}
+document.getElementById('reset').addEventListener('click', () => studies.forEach(st => engulfAll(st, false)));
+
+function resize() {
+  for (const st of studies) {
+    const w = st.board.clientWidth;
+    st.cs = (w - PAD * 2) / COLS;
+    st.W = w; st.H = st.cs * ROWS + PAD * 2;
+    st.board.style.height = st.H + 'px';
+    st.board.width = Math.round(w * dpr); st.board.height = Math.round(st.H * dpr);
+  }
+  for (const ic of icons) {
+    ic.canvas.style.width = ic.canvas.style.height = ic.size + 'px';
+    ic.canvas.width = ic.canvas.height = Math.round(ic.size * dpr);
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+function engulfedCells(st) {
+  const lvl = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < COLS ? clamp01(st.fill[r][c]) : 0;
+  const cells = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const l = lvl(r, c);
+      if (l > .03) cells.push({ r, c, l, k: r * COLS + c + 1, x: PAD + (c + .5) * st.cs, y: PAD + (r + .5) * st.cs });
+    }
+  }
+  return [cells, lvl];
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(50, now - last); last = now;
+  for (const st of studies) {
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const f = st.fill[r][c], t = st.target[r][c];
+        st.fill[r][c] = t > f ? Math.min(t, f + dt / 600) : Math.max(t, f - dt / 260);
+      }
+    }
+    const c = st.ctx;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, st.W, st.H);
+    drawBoard(c, st.cs, st.W, st.H);
+    c.save();
+    c.beginPath(); c.rect(PAD, PAD, st.cs * COLS, st.cs * ROWS); c.clip();
+    const [cells, lvl] = engulfedCells(st);
+    st.d.draw(c, cells, lvl, st.cs, now, st.H, st.W);
+    c.restore();
+  }
+  for (const ic of icons) {
+    const c = ic.canvas.getContext('2d'), s = ic.size;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, s, s);
+    const lvl = (r, col) => r === 0 && col === 0 ? 1 : 0;
+    ic.d.draw(c, [{ r: 0, c: 0, l: 1, k: 5, x: s / 2, y: s / 2 }], lvl, s * .8, now, s, s);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
