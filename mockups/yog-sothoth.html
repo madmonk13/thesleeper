@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yog-Sothoth Gates</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #e4f5ee; --muted: rgba(200, 235, 222, .72); --edge: rgba(125, 255, 200, .16); }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    font-family: "IM Fell English", Georgia, serif;
+    background: radial-gradient(ellipse at 50% 0%, #0b2421 0%, #04100f 45%, #020807 100%) fixed;
+  }
+  header { max-width: 1100px; margin: 0 auto; padding: 28px 16px 4px; text-align: center; }
+  h1 {
+    margin: 0 0 6px;
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 900;
+    font-size: 30px;
+    color: #c9ffe8;
+    text-shadow: 0 0 18px rgba(61, 255, 176, .4);
+  }
+  header p { margin: 0 auto; max-width: 680px; font-size: 19px; line-height: 1.5; color: #e2f2ec; }
+  .controls { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; margin: 16px 0 4px; }
+  button {
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 700;
+    letter-spacing: .06em;
+    color: var(--ink);
+    border: 1px solid rgba(125, 255, 200, .3);
+    background: rgba(6, 24, 22, .6);
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 12px 16px 40px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+    gap: 18px;
+  }
+  .study {
+    background: linear-gradient(180deg, rgba(14, 44, 39, .55), rgba(4, 16, 14, .75));
+    border: 1px solid var(--edge);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .study h2 { margin: 0; font-family: Cinzel, Georgia, serif; font-size: 20px; letter-spacing: .05em; }
+  .study .tag {
+    margin: 2px 0 12px;
+    font-family: Cinzel, Georgia, serif;
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .board { display: block; width: 100%; }
+  .row { display: flex; gap: 14px; align-items: center; margin-top: 12px; }
+  .icons { flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .icons canvas { display: block; }
+  .pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 12px 3px 6px;
+    border: 1px solid var(--edge);
+    border-radius: 999px;
+    background: rgba(6, 24, 22, .32);
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .study p { margin: 0; font-size: 18px; line-height: 1.45; color: #e2f2ec; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Yog-Sothoth</h1>
+    <p>Four looks for a gate of Yog-Sothoth. Each gate holds its own cell and reaches the eight around it, shown by a faint shimmer. Every few seconds it swaps two stones within its reach, as it would after each of your turns. Use the button to see a rune close it.</p>
+    <div class="controls"><button id="close">Close with a rune</button></div>
+  </header>
+  <main id="studies"></main>
+
+<script>
+(() => {
+'use strict';
+
+const COLS = 7, ROWS = 7, PAD = 8, TAU = Math.PI * 2;
+const GATE = [3, 3];
+const STONES = [
+  { shape: 'circle',   light: '#a9ecd6', fill: '#3e9c86', dark: '#103b33' },
+  { shape: 'square',   light: '#fff6e0', fill: '#cdbf9c', dark: '#5f5440' },
+  { shape: 'star',     light: '#ffb8a6', fill: '#c4543f', dark: '#521810' },
+  { shape: 'diamond',  light: '#c4aef0', fill: '#5d3f8f', dark: '#1c0f31' },
+  { shape: 'hex',      light: '#d4f7a4', fill: '#7aa83e', dark: '#243f12' },
+  { shape: 'triangle', light: '#ffe6a8', fill: '#c9932f', dark: '#563809' },
+];
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const clamp01 = v => Math.max(0, Math.min(1, v));
+const inOut = t => t < .5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+const dpr = Math.min(2, window.devicePixelRatio || 1);
+const REACH = [];
+for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) if (dr || dc) REACH.push([GATE[0] + dr, GATE[1] + dc]);
+
+// ---------- board and stones (simplified from the game) ----------
+function roundRectPath(c, x, y, w, h, r) {
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function shapePath(c, shape, cx, cy, r) {
+  c.beginPath();
+  switch (shape) {
+    case 'circle': c.arc(cx, cy, r * .9, 0, TAU); break;
+    case 'square': roundRectPath(c, cx - r * .8, cy - r * .8, r * 1.6, r * 1.6, r * .22); break;
+    case 'star':
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + i * Math.PI / 5, rad = i % 2 ? r * .52 : r * 1.02;
+        const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad + r * .06;
+        i ? c.lineTo(px, py) : c.moveTo(px, py);
+      }
+      c.closePath();
+      break;
+    case 'diamond':
+      c.moveTo(cx, cy - r); c.lineTo(cx + r * .78, cy); c.lineTo(cx, cy + r); c.lineTo(cx - r * .78, cy);
+      c.closePath();
+      break;
+    case 'hex':
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3, px = cx + Math.cos(a) * r * .92, py = cy + Math.sin(a) * r * .92;
+        i ? c.lineTo(px, py) : c.moveTo(px, py);
+      }
+      c.closePath();
+      break;
+    case 'triangle':
+      c.moveTo(cx, cy - r * .92); c.lineTo(cx + r * .95, cy + r * .72); c.lineTo(cx - r * .95, cy + r * .72);
+      c.closePath();
+      break;
+  }
+}
+
+function drawStone(c, st, cx, cy, r) {
+  shapePath(c, st.shape, cx, cy + r * .1, r);
+  c.fillStyle = 'rgba(0,0,0,.45)'; c.fill();
+  shapePath(c, st.shape, cx, cy, r);
+  const g = c.createLinearGradient(cx - r * .4, cy - r, cx + r * .4, cy + r);
+  g.addColorStop(0, st.light); g.addColorStop(.38, st.fill); g.addColorStop(1, st.dark);
+  c.fillStyle = g; c.fill();
+  c.lineJoin = 'round'; c.lineWidth = Math.max(1, r * .07); c.strokeStyle = st.dark; c.stroke();
+}
+
+function drawCells(c, cs, W, H) {
+  c.beginPath(); roundRectPath(c, 0, 0, W, H, 14);
+  c.fillStyle = 'rgba(3,12,12,.55)'; c.fill();
+  c.strokeStyle = 'rgba(125,255,200,.14)'; c.lineWidth = 1.5; c.stroke();
+  for (let r = 0; r < ROWS; r++) {
+    for (let col = 0; col < COLS; col++) {
+      const x = PAD + col * cs + 2, y = PAD + r * cs + 2, w = cs - 4;
+      c.beginPath(); roundRectPath(c, x, y, w, w, cs * .14);
+      c.fillStyle = (r + col) % 2 ? 'rgba(140,190,175,.05)' : 'rgba(140,190,175,.1)';
+      c.fill();
+      c.strokeStyle = 'rgba(0,0,0,.35)'; c.lineWidth = 1; c.stroke();
+    }
+  }
+}
+
+// the gate's reach: a slow oil-slick shimmer over the eight cells around it
+function drawReach(c, cs, now, k) {
+  if (k <= 0) return;
+  c.save();
+  c.globalCompositeOperation = 'lighter';
+  for (const [r, col] of REACH) {
+    const x = PAD + col * cs + 2, y = PAD + r * cs + 2, w = cs - 4;
+    const hue = (now / 30 + (r * 3 + col) * 40) % 360;
+    c.beginPath(); roundRectPath(c, x, y, w, w, cs * .14);
+    c.fillStyle = `hsla(${hue},70%,60%,${(.1 + .04 * Math.sin(now / 700 + r + col)) * k})`; c.fill();
+    c.strokeStyle = `hsla(${hue},80%,70%,${.32 * k})`; c.lineWidth = 1; c.stroke();
+  }
+  c.restore();
+}
+
+// ---------- 1. Congeries of Globes ----------
+// a churning knot of iridescent spheres, each with an oil-slick rim and a dark heart
+function globe(c, x, y, r, hue, a = 1) {
+  const g = c.createRadialGradient(x - r * .3, y - r * .35, r * .05, x, y, r);
+  g.addColorStop(0, `hsla(${hue + 40},90%,85%,${.9 * a})`);
+  g.addColorStop(.35, `hsla(${hue},70%,35%,${.85 * a})`);
+  g.addColorStop(.75, `rgba(6,4,14,${.92 * a})`);
+  g.addColorStop(1, `hsla(${hue + 120},90%,65%,${.8 * a})`);
+  c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = g; c.fill();
+  c.lineWidth = Math.max(1, r * .1); c.strokeStyle = `hsla(${hue + 180},90%,72%,${.5 * a})`; c.stroke();
+  c.beginPath(); c.arc(x - r * .35, y - r * .4, r * .16, 0, TAU); c.fillStyle = `rgba(255,255,255,${.6 * a})`; c.fill();
+}
+
+function drawGlobes(c, cx, cy, cs, now, k) {
+  const s = cs * k;
+  if (s <= 0) return;
+  halo(c, cx, cy, s * 1.1, now);
+  const balls = [];
+  for (let i = 0; i < 7; i++) {
+    const a = now / (2600 + i * 310) * (i % 2 ? 1 : -1) + i * 2.1, d = s * (.06 + hash(i) * .2);
+    balls.push({ x: cx + Math.cos(a) * d, y: cy + Math.sin(a) * d * .9, r: s * (.15 + hash(i + 9) * .11), hue: (now / 18 + i * 47) % 360, z: Math.sin(a) });
+  }
+  balls.sort((p, q) => p.z - q.z);
+  for (const b of balls) globe(c, b.x, b.y, b.r, b.hue);
+}
+
+function halo(c, cx, cy, R, now) {
+  c.save(); c.globalCompositeOperation = 'lighter';
+  const g = c.createRadialGradient(cx, cy, R * .1, cx, cy, R);
+  const h = (now / 25) % 360;
+  g.addColorStop(0, `hsla(${h},80%,65%,.35)`); g.addColorStop(.5, `hsla(${h + 90},80%,55%,.12)`); g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g; c.fillRect(cx - R, cy - R, R * 2, R * 2);
+  c.restore();
+}
+
+// ---------- 2. The Gate ----------
+// a ring of carved stone around a turning starry void, with globes drifting through
+function drawPortal(c, cx, cy, cs, now, k) {
+  const s = cs * .5 * k;
+  if (s <= 0) return;
+  halo(c, cx, cy, s * 2.2, now);
+  c.save();
+  c.beginPath(); c.arc(cx, cy, s * .78, 0, TAU); c.clip();
+  c.fillStyle = '#05030b'; c.fillRect(cx - s, cy - s, s * 2, s * 2);
+  c.globalCompositeOperation = 'lighter';
+  for (let arm = 0; arm < 3; arm++) {
+    c.beginPath();
+    for (let t = 0; t < 1; t += .03) {
+      const a = arm * TAU / 3 + t * 5 - now / 1400, rr = s * .78 * t;
+      const px = cx + Math.cos(a) * rr, py = cy + Math.sin(a) * rr;
+      t ? c.lineTo(px, py) : c.moveTo(px, py);
+    }
+    c.strokeStyle = `hsla(${(now / 20 + arm * 120) % 360},85%,65%,.35)`; c.lineWidth = s * .12; c.stroke();
+  }
+  for (let i = 0; i < 14; i++) {
+    const a = hash(i) * TAU - now / (1800 + i * 90), rr = s * .7 * hash(i + 3);
+    c.beginPath(); c.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, s * .025, 0, TAU);
+    c.fillStyle = 'rgba(235,240,255,.8)'; c.fill();
+  }
+  c.globalCompositeOperation = 'source-over';
+  for (let i = 0; i < 3; i++) {
+    const a = now / (1500 + i * 400) + i * 2, rr = s * (.2 + .22 * i);
+    globe(c, cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * .8, s * (.16 - i * .03), (now / 18 + i * 90) % 360, .9);
+  }
+  c.restore();
+  // the stone ring, notched with glyphs
+  c.beginPath(); c.arc(cx, cy, s, 0, TAU); c.arc(cx, cy, s * .78, 0, TAU, true);
+  const g = c.createLinearGradient(cx - s, cy - s, cx + s, cy + s);
+  g.addColorStop(0, '#8a948e'); g.addColorStop(.5, '#4a524e'); g.addColorStop(1, '#1d2220');
+  c.fillStyle = g; c.fill('evenodd');
+  c.strokeStyle = 'rgba(0,0,0,.7)'; c.lineWidth = Math.max(1, cs * .03);
+  c.beginPath(); c.arc(cx, cy, s, 0, TAU); c.stroke();
+  c.beginPath(); c.arc(cx, cy, s * .78, 0, TAU); c.stroke();
+  for (let i = 0; i < 12; i++) {
+    const a = i * TAU / 12;
+    c.beginPath(); c.moveTo(cx + Math.cos(a) * s * .82, cy + Math.sin(a) * s * .82); c.lineTo(cx + Math.cos(a) * s * .96, cy + Math.sin(a) * s * .96);
+    c.strokeStyle = `hsla(${(now / 20 + i * 30) % 360},80%,70%,${.25 + .2 * Math.sin(now / 400 + i)})`; c.lineWidth = Math.max(1, cs * .025); c.stroke();
+  }
+}
+
+// ---------- 3. The Rift ----------
+// a tear in space, its lips shimmering, three globes circling it
+function drawRift(c, cx, cy, cs, now, k) {
+  const s = cs * .5 * k;
+  if (s <= 0) return;
+  halo(c, cx, cy, s * 2, now);
+  const balls = [0, 1, 2].map(i => { const a = now / 1700 + i * TAU / 3; return { a, x: cx + Math.cos(a) * s * .95, y: cy + Math.sin(a) * s * .42, z: Math.sin(a) }; });
+  const back = balls.filter(b => b.z < 0), front = balls.filter(b => b.z >= 0);
+  back.forEach((b, i) => globe(c, b.x, b.y, s * .24, (now / 18 + b.a * 60) % 360, .85));
+  const w = s * (.46 + .05 * Math.sin(now / 500));
+  const lens = () => { c.beginPath(); c.moveTo(cx, cy - s); c.bezierCurveTo(cx + w, cy - s * .4, cx + w, cy + s * .4, cx, cy + s); c.bezierCurveTo(cx - w, cy + s * .4, cx - w, cy - s * .4, cx, cy - s); c.closePath(); };
+  c.save();
+  c.shadowColor = `hsl(${(now / 20) % 360},90%,65%)`; c.shadowBlur = s * .5;
+  lens(); c.fillStyle = '#04020a'; c.fill();
+  c.restore();
+  c.save(); lens(); c.clip();
+  for (let i = 0; i < 10; i++) {
+    const y = cy - s + ((hash(i) * 2 * s + now / 30 * (1 + hash(i + 1))) % (2 * s)), x = cx + (hash(i + 5) - .5) * w;
+    c.beginPath(); c.arc(x, y, s * .03, 0, TAU); c.fillStyle = 'rgba(230,235,255,.8)'; c.fill();
+  }
+  c.restore();
+  c.save(); c.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 3; i++) {
+    lens();
+    c.strokeStyle = `hsla(${(now / 15 + i * 110) % 360},90%,65%,.5)`; c.lineWidth = Math.max(1, s * (.09 - i * .025)); c.stroke();
+  }
+  c.restore();
+  front.forEach(b => globe(c, b.x, b.y, s * .24, (now / 18 + b.a * 60) % 360, .95));
+}
+
+// ---------- 4. The Orrery ----------
+// rings of light turning on different axes around a bright core, globes riding them; the
+// rings sweep out over the cells the gate can reach
+function drawOrrery(c, cx, cy, cs, now, k) {
+  const s = cs * k;
+  if (s <= 0) return;
+  halo(c, cx, cy, s * 1.3, now);
+  const rings = [0, 1, 2].map(i => ({ rx: s * (.55 + i * .32), ry: s * (.18 + i * .1), rot: now / (5000 + i * 1700) * (i % 2 ? -1 : 1) + i, hue: (now / 20 + i * 120) % 360, a: now / (900 + i * 500) }));
+  // back halves of the rings and globes, then the core, then the front halves
+  const half = (rg, front) => {
+    c.save(); c.translate(cx, cy); c.rotate(rg.rot);
+    c.beginPath(); c.ellipse(0, 0, rg.rx, rg.ry, 0, front ? 0 : Math.PI, front ? Math.PI : TAU);
+    c.strokeStyle = `hsla(${rg.hue},85%,68%,${front ? .55 : .25})`; c.lineWidth = Math.max(1, cs * .025); c.stroke();
+    const gs = Math.sin(rg.a) >= 0;
+    if (gs === front) globe(c, Math.cos(rg.a) * rg.rx, Math.sin(rg.a) * rg.ry, s * .14, rg.hue);
+    c.restore();
+  };
+  c.save(); c.globalCompositeOperation = 'lighter'; rings.forEach(rg => half(rg, false)); c.restore();
+  const core = c.createRadialGradient(cx, cy, 0, cx, cy, s * .3);
+  const h = (now / 12) % 360;
+  core.addColorStop(0, '#ffffff'); core.addColorStop(.3, `hsl(${h},90%,75%)`); core.addColorStop(.7, `hsla(${h + 60},80%,40%,.8)`); core.addColorStop(1, 'rgba(0,0,0,0)');
+  c.beginPath(); c.arc(cx, cy, s * .3, 0, TAU); c.fillStyle = core; c.fill();
+  c.save(); c.globalCompositeOperation = 'lighter'; rings.forEach(rg => half(rg, true)); c.restore();
+}
+
+// ---------- the studies ----------
+const DESIGNS = [
+  { name: 'Congeries of Globes', tag: 'The iridescent spheres', draw: drawGlobes,
+    text: 'A churning knot of iridescent spheres, each with an oil-slick rim and a dark heart. This is closest to how Lovecraft describes Yog-Sothoth, and it is unlike anything else on the board.' },
+  { name: 'The Gate', tag: 'A ring of carved stone', draw: drawPortal,
+    text: 'A ring of carved stone around a slowly turning, starry void, with globes drifting through it. It reads most plainly as a gate, and the carved ring ties it to the ruins.' },
+  { name: 'The Rift', tag: 'A tear in space', draw: drawRift,
+    text: 'A tall tear in space with shimmering lips and stars falling through it. Three globes circle it, passing behind and in front. It is the most unsettling of the four.' },
+  { name: 'The Orrery', tag: 'Rings turning on every axis', draw: drawOrrery,
+    text: 'Rings of light turning on different axes around a bright core, with a globe riding each ring. The rings sweep out over the neighbouring cells, so the gate’s reach is part of its shape.' },
+];
+
+// one board shared by all four studies, so the swaps line up
+const board = [];
+for (let r = 0; r < ROWS; r++) board.push([...Array(COLS)].map((_, col) => ({ st: Math.floor(hash(r * 31 + col * 7 + 3) * 6), x: col, y: r })));
+let swap = null, nextSwap = 1200, close = null;
+
+function pickSwap(now) {
+  const pool = REACH.filter(([r, col]) => !(r === GATE[0] && col === GATE[1]));
+  for (let guard = 0; guard < 20; guard++) {
+    const a = pool[Math.floor(Math.random() * pool.length)], b = pool[Math.floor(Math.random() * pool.length)];
+    if (a !== b && board[a[0]][a[1]].st !== board[b[0]][b[1]].st) return { a, b, t0: now };
+  }
+  return null;
+}
+
+const studies = [];
+const main = document.getElementById('studies');
+for (const d of DESIGNS) {
+  const el = document.createElement('section');
+  el.className = 'study';
+  el.innerHTML = `<h2>${d.name}</h2><div class="tag">${d.tag}</div><canvas class="board"></canvas>
+    <div class="row"><div class="icons"><canvas></canvas><div class="pill"><canvas></canvas>2 left</div></div><p>${d.text}</p></div>`;
+  main.appendChild(el);
+  const cv = el.querySelector('.board'), [big, small] = el.querySelectorAll('.icons canvas');
+  studies.push({ d, cv, ctx: cv.getContext('2d'), big, small, cs: 0, W: 0, H: 0 });
+}
+document.getElementById('close').addEventListener('click', () => { if (!close) close = { t0: performance.now() }; });
+
+function resize() {
+  for (const st of studies) {
+    const w = st.cv.clientWidth;
+    st.cs = (w - PAD * 2) / COLS;
+    st.W = w; st.H = st.cs * ROWS + PAD * 2;
+    st.cv.style.height = st.H + 'px';
+    st.cv.width = Math.round(w * dpr); st.cv.height = Math.round(st.H * dpr);
+    for (const [cv, s] of [[st.big, 96], [st.small, 26]]) {
+      cv.style.width = cv.style.height = s + 'px';
+      cv.width = cv.height = Math.round(s * dpr);
+    }
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+const SWAP_DUR = 750;
+function frame(now) {
+  // the gate's openness: 1 open, falling to 0 as a rune closes it, then it reopens for comparison
+  let k = 1, flash = 0;
+  if (close) {
+    const t = now - close.t0;
+    k = t < 500 ? 1 - inOut(t / 500) : t < 2200 ? 0 : clamp01((t - 2200) / 600);
+    flash = t < 700 ? Math.max(0, 1 - Math.abs(t - 450) / 250) : 0;
+    if (t > 2800) close = null;
+  }
+  if (!swap && !close && now > nextSwap) { swap = pickSwap(now); nextSwap = now + 2600; }
+  let sp = 0;
+  if (swap) {
+    sp = clamp01((now - swap.t0) / SWAP_DUR);
+    if (sp >= 1) {
+      const [ar, ac] = swap.a, [br, bc] = swap.b;
+      [board[ar][ac], board[br][bc]] = [board[br][bc], board[ar][ac]];
+      swap = null; sp = 0;
+    }
+  }
+  for (const st of studies) {
+    const c = st.ctx, cs = st.cs;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, st.W, st.H);
+    drawCells(c, cs, st.W, st.H);
+    drawReach(c, cs, now, k);
+    const gx = PAD + (GATE[1] + .5) * cs, gy = PAD + (GATE[0] + .5) * cs;
+    const lifted = [];
+    for (let r = 0; r < ROWS; r++) for (let col = 0; col < COLS; col++) {
+      if (r === GATE[0] && col === GATE[1]) continue;
+      const p = board[r][col];
+      if (swap && ((swap.a[0] === r && swap.a[1] === col) || (swap.b[0] === r && swap.b[1] === col))) { lifted.push([r, col, p]); continue; }
+      drawStone(c, STONES[p.st], PAD + (col + .5) * cs, PAD + (r + .5) * cs, cs * .42);
+    }
+    st.d.draw(c, gx, gy, cs, now, k);
+    if (swap) {
+      // the two stones are drawn through the gate: each arcs out past its heart to the other's cell
+      const [ar, ac] = swap.a, [br, bc] = swap.b, e = inOut(sp);
+      const ax = PAD + (ac + .5) * cs, ay = PAD + (ar + .5) * cs, bx = PAD + (bc + .5) * cs, by = PAD + (br + .5) * cs;
+      const path = (x0, y0, x1, y1, t) => { const u = 1 - t; return [u * u * x0 + 2 * u * t * gx + t * t * x1, u * u * y0 + 2 * u * t * gy + t * t * y1]; };
+      c.save(); c.globalCompositeOperation = 'lighter';
+      c.beginPath(); c.moveTo(ax, ay); c.quadraticCurveTo(gx, gy, bx, by);
+      c.strokeStyle = `hsla(${(now / 15) % 360},90%,70%,${.5 * Math.sin(sp * Math.PI)})`; c.lineWidth = Math.max(1.5, cs * .05); c.stroke();
+      c.restore();
+      for (const [r, col, p] of lifted) {
+        const fromA = r === ar && col === ac;
+        const [x, y] = fromA ? path(ax, ay, bx, by, e) : path(bx, by, ax, ay, e);
+        const sc = 1 - .35 * Math.sin(sp * Math.PI);
+        c.save(); c.globalAlpha = .55 + .45 * Math.abs(1 - 2 * sp);
+        drawStone(c, STONES[p.st], x, y, cs * .42 * sc);
+        c.restore();
+      }
+    }
+    if (flash) {
+      c.save(); c.globalCompositeOperation = 'lighter';
+      const g = c.createRadialGradient(gx, gy, 0, gx, gy, cs * 2);
+      g.addColorStop(0, `rgba(255,214,140,${.8 * flash})`); g.addColorStop(1, 'rgba(255,184,77,0)');
+      c.fillStyle = g; c.fillRect(gx - cs * 2, gy - cs * 2, cs * 4, cs * 4);
+      c.restore();
+    }
+    for (const [cv, s, f] of [[st.big, 96, .62], [st.small, 26, .95]]) {
+      const ic = cv.getContext('2d');
+      ic.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ic.clearRect(0, 0, s, s);
+      st.d.draw(ic, s / 2, s / 2, s * f, now, 1);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -19,33 +19,75 @@ const POINTS_PER_PIECE = 40;
 const CLEANSE_BONUS = 100;
 const SHOG_BONUS = 100;
 const IDOL_HP = 3, IDOL_BONUS = 500, DRAIN_BONUS = 60, FLOOD_PATIENCE = 3;
+const GATE_RINGS = 3, GATE_PATIENCE = 3, GATE_BONUS = 150, GATE_CLOSE_BONUS = 400;
 const WITCH_STRIKE = 110; // ms from a witch-light firing to its bolt landing
 const TAINT_PATIENCE = 2;
 const STAR_THRESHOLDS = [1, 1.5, 2];
 const DIRS = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+// Monolith layouts: [row, col, size], size 1 a single cell, size 2 a 2×2 block from its top-left.
+// Each size comes in even numbers and every layout is symmetric.
+const MONO_LAYOUTS = [
+  [[2, 1, 1], [2, 6, 1], [7, 1, 1], [7, 6, 1]],                       // four sentinels
+  [[4, 1, 2], [4, 5, 2]],                                             // twin pillars
+  [[2, 3, 2], [6, 3, 2], [4, 0, 1], [5, 0, 1], [4, 7, 1], [5, 7, 1]], // the gate
+  [[1, 1, 2], [7, 5, 2], [1, 6, 1], [8, 1, 1], [4, 3, 1], [5, 4, 1]], // pinwheel
+  [[4, 0, 1], [4, 1, 1], [5, 6, 1], [5, 7, 1]],                       // ramparts
+  [[3, 0, 2], [5, 6, 2], [1, 4, 1], [8, 3, 1]],                       // twin gates
+];
+
+// Obstacles in the order they are introduced. Each gets a seal of its own (3, 6, 9…), the seal
+// after practises it alongside stone goals, and from then on it joins the mixed seals. Null slots
+// are reserved for obstacles still to come; until they exist, their seals are mixed ones.
+const OBSTACLES = ['taint', 'mono', 'shog', 'idol', 'gate', null, null, null, null, null];
+const INTRO_EVERY = 3;
+const introSeal = i => INTRO_EVERY * (i + 1);
 
 function levelConfig(n) {
   const goals = [{ type: 'score', target: 1500 + n * 1000 }];
-  let taint = 0, shoggoth = 0, idol = false;
-  if (n % 3 === 0) {
-    taint = Math.min(18, 4 + n);
-  } else if (n >= 5 && n % 3 === 2) {
-    // every third level from 5 (5, 8, 11…) a shoggoth engulfs part of the board
-    shoggoth = Math.min(24, 6 + n);
-  } else if (n >= 10 && n % 3 === 1) {
-    // every third level from 10 (10, 13, 16…) a Dagon idol floods the board
-    idol = true;
-  } else if (n >= 2) {
+  const known = [];
+  OBSTACLES.forEach((o, i) => { if (o && introSeal(i) <= n) known.push({ o, exp: n - introSeal(i) }); });
+  const roll = i => hash(n * 53.17 + i * 7.31 + .5); // stable per seal, so a retry faces the same rite
+  const slot = n / INTRO_EVERY - 1;
+  let pick = [], practice = false;
+  if (Number.isInteger(slot) && OBSTACLES[slot]) {
+    pick = [OBSTACLES[slot]];
+  } else if (known.length) {
+    const newest = known[known.length - 1];
+    if (n % INTRO_EVERY === 1 && newest.exp < INTRO_EVERY) {
+      pick = [newest.o];
+      practice = true;
+    } else {
+      // mixed: the newest while it's still fresh, plus older ones drawn by the seal
+      const want = Math.min(known.length, n >= 36 ? 3 : 2);
+      if (newest.exp < INTRO_EVERY * 2) pick.push(newest.o);
+      const rest = known.map(k => k.o).filter(o => !pick.includes(o));
+      for (let i = 0; pick.length < want && rest.length; i++) pick.push(rest.splice(Math.floor(roll(i) * rest.length), 1)[0]);
+    }
+  }
+  const exp = o => known.find(k => k.o === o).exp, solo = pick.length === 1, has = o => pick.includes(o);
+  const taint = has('taint') ? (solo ? Math.min(18, 5 + exp('taint')) : Math.min(10, 4 + Math.floor(exp('taint') / 3))) : 0;
+  const shoggoth = has('shog') ? (solo ? Math.min(24, 8 + exp('shog')) : Math.min(14, 6 + Math.floor(exp('shog') / 3))) : 0;
+  const idol = has('idol');
+  const gates = has('gate') ? (exp('gate') >= INTRO_EVERY * 3 ? 2 : 1) : 0;
+  // the larger monolith layouts come once they're familiar
+  const small = [0, 1, 4], pool = has('mono') && exp('mono') < INTRO_EVERY * 2 ? small : MONO_LAYOUTS.map((_, i) => i);
+  const monoliths = has('mono') ? pool[randInt(pool.length)] : null;
+  // stone goals on the early seals, on practice seals, and wherever nothing else sets a goal
+  if (n >= 2 && (n < INTRO_EVERY || practice || pick.every(o => o === 'mono'))) {
     const count = Math.min(25, 8 + Math.floor(n * 1.5));
     const first = (n * 2) % NC;
     goals.push({ type: 'collect', color: first, count });
     if (n >= 5) goals.push({ type: 'collect', color: (first + 3) % NC, count });
-    if (n >= 7) taint = 4;
   }
   if (taint) goals.push({ type: 'cleanse' });
   if (shoggoth) goals.push({ type: 'free' });
   if (idol) goals.push({ type: 'idol' }, { type: 'drain' });
-  return { moves: Math.max(16, 22 - Math.floor(n / 2)), goals, taint, shoggoth, idol };
+  if (gates) goals.push({ type: 'gate' });
+  // turns come in even steps: a base that tightens as the descent goes on, two more for each
+  // obstacle beyond the first (monoliths don't count), and two more for the idol's double goal
+  const base = n < 15 ? 20 : n < 30 ? 18 : 16;
+  const moves = base + 2 * Math.max(0, pick.filter(o => o !== 'mono').length - 1) + (idol ? 2 : 0);
+  return { moves, goals, taint, shoggoth, idol, monoliths, gates, obstacles: pick };
 }
 
 // ---------- DOM ----------
@@ -56,7 +98,7 @@ const fg = $('fg'), fctx = fg.getContext('2d'); // eye layer, drawn over the boa
 const overlay = $('overlay');
 
 // ---------- State ----------
-let grid = [], taint = [], taintFill = [], shog = [], shogFill = [], flood = [], floodFill = [], idol = null, level = 1, score = 0, movesLeft = 0, cfg = null, collected = [];
+let grid = [], mono = [], monoliths = [], taint = [], taintFill = [], shog = [], shogFill = [], flood = [], floodFill = [], idol = null, level = 1, score = 0, movesLeft = 0, cfg = null, collected = [];
 let state = 'menu', busy = false, selected = null, drag = null, hint = null;
 let lastInput = 0, muted = false, cleansedThisMove = 0, idleTurns = 0;
 let particles = [], fx = [], floats = [], banner = null, shake = null;
@@ -73,6 +115,7 @@ const randInt = n => Math.floor(Math.random() * n);
 const randColor = () => randInt(NC);
 const makePiece = (color, special, c, r) => ({ color, special: special || null, x: c, y: r, scale: 1 });
 const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const rng = seed => { let i = 0; return () => hash(seed * 97.3 + i++ * 13.1); }; // a repeatable stream, for stable detail
 
 // ---------- Tweens ----------
 const tweens = [];
@@ -366,6 +409,18 @@ function forEachPiece(fn) {
       if (grid[r][c]) fn(grid[r][c], r, c);
 }
 
+// ---------- Monoliths ----------
+// Standing stones that block their cells for the whole level. No stone can rest on them, so
+// nothing matches across them, but falling stones pass behind them to the cells below.
+const monoAt = (r, c) => !!(mono[r] && mono[r][c]);
+
+function seedMonoliths(layout) {
+  mono = Array.from({ length: ROWS }, () => new Array(COLS).fill(false));
+  monoliths = layout == null ? [] : MONO_LAYOUTS[layout].map(([r, c, s]) => ({ r, c, s, seed: r * 13 + c * 7 + s }));
+  for (const { r, c, s } of monoliths)
+    for (let dr = 0; dr < s; dr++) for (let dc = 0; dc < s; dc++) mono[r + dr][c + dc] = true;
+}
+
 // ---------- Taint ----------
 const hasCleanseGoal = () => cfg.goals.some(g => g.type === 'cleanse');
 const taintCount = () => taint.reduce((s, row) => s + row.filter(Boolean).length, 0);
@@ -375,7 +430,7 @@ function seedTaint(n) {
   taintFill = Array.from({ length: ROWS }, () => new Array(COLS).fill(0)); // rises to 1: cells flood in
   if (!n) return;
   const cells = [];
-  const add = (r, c) => { if (inBounds(r, c) && !taint[r][c]) { taint[r][c] = true; cells.push([r, c]); } };
+  const add = (r, c) => { if (inBounds(r, c) && !taint[r][c] && !monoAt(r, c)) { taint[r][c] = true; cells.push([r, c]); } };
   for (let i = 0; i < Math.max(1, Math.round(n / 5)); i++) add(randInt(ROWS), randInt(COLS));
   for (let guard = 0; cells.length < n && guard < 1000; guard++) {
     const [r, c] = cells[randInt(cells.length)], [dr, dc] = DIRS[randInt(4)];
@@ -397,7 +452,7 @@ function seedShoggoth(n) {
   if (!n) return;
   const cells = [];
   const add = (r, c) => {
-    if (inBounds(r, c) && !shog[r][c] && !(taint[r] && taint[r][c])) { shog[r][c] = true; cells.push([r, c]); }
+    if (inBounds(r, c) && !shog[r][c] && !(taint[r] && taint[r][c]) && !monoAt(r, c)) { shog[r][c] = true; cells.push([r, c]); }
   };
   // one or two masses, grown outward so it reads as a single creature
   for (let i = 0; i < (n > 12 ? 2 : 1); i++) add(2 + randInt(ROWS - 4), 1 + randInt(COLS - 2));
@@ -436,7 +491,7 @@ const floodAt = (r, c) => !!(flood[r] && flood[r][c]);
 const idolAt = (r, c) => !!(idol && idol.hp > 0 && idol.r === r && idol.c === c);
 const floodCount = () => flood.reduce((s, row) => s + row.filter(Boolean).length, 0);
 const idolHp = () => idol ? idol.hp : 0;
-const lockedAt = (r, c) => shogAt(r, c) || floodAt(r, c) || idolAt(r, c);
+const lockedAt = (r, c) => shogAt(r, c) || floodAt(r, c) || idolAt(r, c) || gateAt(r, c);
 let drainedThisMove = 0, floodIdle = 0;
 
 function seedIdol(on) {
@@ -447,17 +502,19 @@ function seedIdol(on) {
   let r, c;
   for (let guard = 0; guard < 200; guard++) {
     r = 2 + randInt(ROWS - 4); c = 1 + randInt(COLS - 2);
-    if (!taint[r][c] && !shogAt(r, c)) break;
+    if (!taint[r][c] && !shogAt(r, c) && !monoAt(r, c)) break;
   }
   idol = { r, c, hp: IDOL_HP, shown: -.4, hit: 0, crumble: 0 };
   for (const [dr, dc] of DIRS) {
     const r2 = r + dr, c2 = c + dc;
-    if (inBounds(r2, c2) && !taint[r2][c2] && !shogAt(r2, c2)) { flood[r2][c2] = true; floodFill[r2][c2] = -.3 - Math.random() * .5; }
+    if (inBounds(r2, c2) && !taint[r2][c2] && !shogAt(r2, c2) && !monoAt(r2, c2)) { flood[r2][c2] = true; floodFill[r2][c2] = -.3 - Math.random() * .5; }
   }
 }
 
 function strikeLocked(r, c) {
-  if (shogAt(r, c)) freeShoggoth(r, c);
+  const g = gateOf(r, c);
+  if (g) hitGate(g);
+  else if (shogAt(r, c)) freeShoggoth(r, c);
   else if (floodAt(r, c)) drainFlood(r, c);
   else if (idolAt(r, c)) hitIdol();
 }
@@ -519,7 +576,7 @@ async function spreadFlood() {
       if (wet(r, c))
         for (const [dr, dc] of DIRS) {
           const r2 = r + dr, c2 = c + dc;
-          if (inBounds(r2, c2) && !lockedAt(r2, c2) && !taint[r2][c2]) targets.set(key(r2, c2), Math.hypot(r2 - idol.r, c2 - idol.c));
+          if (inBounds(r2, c2) && !lockedAt(r2, c2) && !monoAt(r2, c2) && !taint[r2][c2]) targets.set(key(r2, c2), Math.hypot(r2 - idol.r, c2 - idol.c));
         }
   if (!targets.size) return;
   const near = Math.min(...targets.values());
@@ -537,6 +594,131 @@ async function spreadFlood() {
   await wait(900);
 }
 
+// ---------- Gates of Yog-Sothoth ----------
+// A gate holds its cell like the idol (the stone beneath stays hidden) and reaches the eight
+// cells around it. After every turn it swaps one pair of stones in its reach for each ring it
+// has, never into a match. Any clear in its reach, or a relic striking it, breaks a ring, and with
+// none left it is gone for good. GATE_PATIENCE turns without a hit and a broken ring returns.
+let gates = [], gateSwaps = [];
+const gateOf = (r, c) => gates.find(g => g.rings > 0 && g.r === r && g.c === c);
+const gateAt = (r, c) => !!gateOf(r, c);
+const gatesOpen = () => gates.filter(g => g.rings > 0).length;
+const inReach = (g, r, c) => Math.max(Math.abs(g.r - r), Math.abs(g.c - c)) === 1;
+
+function seedGates(n) {
+  gates = []; gateSwaps = [];
+  for (let guard = 0; gates.length < n && guard < 500; guard++) {
+    // a cell off the edge so the whole reach is on the board, and apart from any other gate
+    const r = 1 + randInt(ROWS - 2), c = 1 + randInt(COLS - 2);
+    if (lockedAt(r, c) || monoAt(r, c) || taint[r][c]) continue;
+    if (gates.some(g => Math.max(Math.abs(g.r - r), Math.abs(g.c - c)) < 3)) continue;
+    gates.push({ r, c, rings: GATE_RINGS, idle: 0, hitNow: false, ring: [1, 1, 1], shown: -.4 - gates.length * .3, flash: 0, gone: 0, seed: r * 8 + c });
+  }
+}
+
+function hitGate(g) {
+  if (g.rings <= 0) return;
+  g.rings--;
+  g.hitNow = true;
+  g.flash = 1;
+  const closed = g.rings === 0;
+  score += closed ? GATE_CLOSE_BONUS : GATE_BONUS;
+  for (let i = 0; i < (closed ? 26 : 12); i++) {
+    const a = Math.random() * TAU, sp = .05 + Math.random() * (closed ? .18 : .1);
+    particles.push({
+      x: g.c + .5, y: g.r + .5, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      life: 0, max: 700, color: `hsl(${Math.random() * 360},90%,72%)`, size: .025 + Math.random() * .035, rot: 0, spin: 0, mote: true,
+    });
+  }
+  if (closed) {
+    addFloat('the gate closes', g.c, g.r, '#e6d4ff', .32);
+    startShake(450, 6);
+    [330, 415, 494, 660].forEach((f, i) => beep(f, 1.2, 'sine', .05, i * .07));
+    noise(.9, 2600, .05, 1.5, 0, 'bandpass', .05);
+    thunder(.35);
+  } else {
+    // a ring shatters like struck glass
+    beep(660, .6, 'triangle', .05);
+    beep(495, .8, 'sine', .05, .08);
+    noise(.25, 2400, .05, 2);
+  }
+  updateHUD();
+}
+
+// Two stones in the gate's reach whose swap makes no match anywhere, or null.
+function pickGateSwap(g) {
+  const cells = [];
+  for (let dr = -1; dr <= 1; dr++)
+    for (let dc = -1; dc <= 1; dc++) {
+      const r = g.r + dr, c = g.c + dc;
+      if ((dr || dc) && inBounds(r, c) && grid[r][c] && !lockedAt(r, c) && !monoAt(r, c)) cells.push({ r, c });
+    }
+  const pairs = [];
+  for (let i = 0; i < cells.length; i++)
+    for (let j = i + 1; j < cells.length; j++) {
+      const a = cells[i], b = cells[j], p = grid[a.r][a.c], q = grid[b.r][b.c];
+      if (p.color === q.color && p.special === q.special) continue;
+      swapGrid(a, b);
+      const ok = !findRuns().length;
+      swapGrid(a, b);
+      if (ok) pairs.push([a, b]);
+    }
+  return pairs.length ? pairs[randInt(pairs.length)] : null;
+}
+
+// The two stones are drawn through the gate's heart into each other's cells.
+const GATE_SWAP_DUR = 620;
+async function gateSwap(g, [a, b]) {
+  const pA = grid[a.r][a.c], pB = grid[b.r][b.c];
+  swapGrid(a, b);
+  const sw = { g, pA, pB, a, b, o: { t: 0 } };
+  gateSwaps.push(sw);
+  beep(1320, .5, 'sine', .022);
+  beep(1980, .4, 'sine', .012, .08);
+  noise(.4, 3200, .02, 4, 0, 'bandpass', .1);
+  await tween(sw.o, { t: 1 }, GATE_SWAP_DUR);
+  gateSwaps.splice(gateSwaps.indexOf(sw), 1);
+  pA.x = b.c; pA.y = b.r; pB.x = a.c; pB.y = a.r;
+  pA.scale = pB.scale = 1;
+}
+
+function updateGateSwaps() {
+  for (const { g, pA, pB, a, b, o } of gateSwaps) {
+    const t = o.t, u = 1 - t, sc = 1 - .35 * Math.sin(t * Math.PI);
+    const bez = (f, to) => [u * u * f.c + 2 * u * t * g.c + t * t * to.c, u * u * f.r + 2 * u * t * g.r + t * t * to.r];
+    [pA.x, pA.y] = bez(a, b);
+    [pB.x, pB.y] = bez(b, a);
+    pA.scale = pB.scale = sc;
+  }
+}
+
+async function gateTurn() {
+  const open = gates.filter(g => g.rings > 0);
+  for (const g of open) {
+    if (g.hitNow || g.rings === GATE_RINGS) g.idle = 0;
+    else if (++g.idle >= GATE_PATIENCE) {
+      g.idle = 0;
+      g.rings++;
+      g.flash = .6;
+      addFloat('a ring returns', g.c, g.r, '#d9c8ff', .28);
+      beep(247, .9, 'sine', .05); beep(370, .9, 'sine', .04, .15); beep(494, 1.1, 'sine', .03, .3);
+    }
+    g.hitNow = false;
+  }
+  updateHUD();
+  const rounds = Math.max(0, ...open.map(g => g.rings));
+  for (let i = 0; i < rounds; i++) {
+    const anims = [];
+    for (const g of open) {
+      if (g.rings <= i) continue;
+      const sw = pickGateSwap(g);
+      if (sw) anims.push(gateSwap(g, sw));
+    }
+    if (!anims.length) break;
+    await Promise.all(anims);
+  }
+}
+
 // A tendril reaches from an existing blob into a neighbouring cell, then a new blob
 // swells there with a wet splat.
 const TENDRIL_REACH = 520;
@@ -546,7 +728,7 @@ async function spreadTaint() {
     for (let c = 0; c < COLS; c++)
       if (taint[r][c])
         for (const [dr, dc] of DIRS)
-          if (inBounds(r + dr, c + dc) && !taint[r + dr][c + dc] && !lockedAt(r + dr, c + dc)) options.push([r, c, r + dr, c + dc]);
+          if (inBounds(r + dr, c + dc) && !taint[r + dr][c + dc] && !lockedAt(r + dr, c + dc) && !monoAt(r + dr, c + dc)) options.push([r, c, r + dr, c + dc]);
   if (!options.length) return;
   const [r0, c0, r, c] = options[randInt(options.length)];
   addFx({ type: 'tendril', r0, c0, r1: r, c1: c, dur: TENDRIL_REACH + 250 });
@@ -572,25 +754,26 @@ async function spreadTaint() {
 }
 
 // ---------- Effects of special pieces ----------
-// Witch-lights seek taint first, then the idol, then water, then a shoggoth, then stones still
+// Witch-lights seek taint first, then a gate, then the idol, then water, then a shoggoth, then stones still
 // needed for a goal, then anything.
 // `prefer` keeps the choice stable between the preview and the real strike while it's still valid.
 function pickDartTarget(taken, prefer) {
   const want = new Set(cfg.goals
     .filter(g => g.type === 'collect' && collected[g.color] < g.count)
     .map(g => g.color));
-  const pool = [], goalPool = [], taintPool = [], shogPool = [], idolPool = [], floodPool = [];
+  const pool = [], goalPool = [], taintPool = [], shogPool = [], idolPool = [], floodPool = [], gatePool = [];
   forEachPiece((q, r, c) => {
     const k = key(r, c);
     if (taken.has(k)) return;
     pool.push(k);
     if (taint[r][c]) taintPool.push(k);
-    if (idolAt(r, c)) idolPool.push(k);
+    if (gateAt(r, c)) gatePool.push(k);
+    else if (idolAt(r, c)) idolPool.push(k);
     else if (floodAt(r, c)) floodPool.push(k);
     else if (shogAt(r, c)) shogPool.push(k);
     else if (want.has(q.color)) goalPool.push(k);
   });
-  const from = [taintPool, idolPool, floodPool, shogPool, goalPool, pool].find(x => x.length) || [];
+  const from = [taintPool, gatePool, idolPool, floodPool, shogPool, goalPool, pool].find(x => x.length) || [];
   if (prefer != null && from.includes(prefer)) return prefer;
   return from.length ? from[randInt(from.length)] : null;
 }
@@ -695,12 +878,18 @@ async function clearCells(keys, cascade = 1, creates = []) {
       fxDelay = 0;
     }
   }
-  // a shoggoth recoils, water drains and the idol cracks beside any stone cleared
+  // a shoggoth recoils, water drains, the idol cracks and a gate loses a ring beside any stone cleared
   for (const k of cleared) {
     const r = Math.floor(k / COLS), c = k % COLS, d = hitDelay.get(k) || 0;
     for (const [dr, dc] of DIRS) {
       if (!lockedAt(r + dr, c + dc)) continue;
       const k2 = key(r + dr, c + dc);
+      if (!freed.has(k2) || freed.get(k2) > d) freed.set(k2, d);
+    }
+    // a gate feels a clear anywhere in its reach, corners included
+    for (const g of gates) {
+      if (g.rings <= 0 || !inReach(g, r, c)) continue;
+      const k2 = key(g.r, g.c);
       if (!freed.has(k2) || freed.get(k2) > d) freed.set(k2, d);
     }
   }
@@ -763,9 +952,9 @@ async function clearCells(keys, cascade = 1, creates = []) {
 async function applyGravity() {
   const anims = [];
   for (let c = 0; c < COLS; c++) {
-    // locked stones hold their place; the rest fall past behind them
+    // locked stones hold their place; the rest fall past behind them and behind monoliths
     const free = [];
-    for (let r = ROWS - 1; r >= 0; r--) if (!lockedAt(r, c)) free.push(r);
+    for (let r = ROWS - 1; r >= 0; r--) if (!lockedAt(r, c) && !monoAt(r, c)) free.push(r);
     let w = 0;
     for (const r of free) {
       if (!grid[r][c]) continue;
@@ -776,7 +965,9 @@ async function applyGravity() {
     let spawn = 0;
     for (; w < free.length; w++) grid[free[w]][c] = makePiece(randColor(), null, c, -1 - spawn++);
     for (let r = 0; r < ROWS; r++) {
-      const p = grid[r][c], dist = r - p.y;
+      const p = grid[r][c];
+      if (!p) continue;
+      const dist = r - p.y;
       if (dist > 0) anims.push(tween(p, { y: r }, 140 + Math.sqrt(dist) * 90, ease.inQuad));
     }
   }
@@ -911,7 +1102,7 @@ async function doCombo(p1, c1, p2, c2) {
 async function trySwap(a, b) {
   if (busy || state !== 'playing') return;
   if (!inBounds(b.r, b.c) || Math.abs(a.r - b.r) + Math.abs(a.c - b.c) !== 1) return;
-  if (lockedAt(a.r, a.c) || lockedAt(b.r, b.c)) return;
+  if (lockedAt(a.r, a.c) || lockedAt(b.r, b.c) || monoAt(a.r, a.c) || monoAt(b.r, b.c)) return;
   busy = true; selected = null; hint = null; cleansedThisMove = 0; freedThisMove = 0; drainedThisMove = 0;
   const pA = grid[a.r][a.c], pB = grid[b.r][b.c];
   swapGrid(a, b);
@@ -962,6 +1153,7 @@ function goalsMet() {
     g.type === 'free' ? shogCount() === 0 :
     g.type === 'idol' ? idolHp() === 0 :
     g.type === 'drain' ? floodCount() === 0 :
+    g.type === 'gate' ? gatesOpen() === 0 :
     taintCount() === 0);
 }
 
@@ -990,13 +1182,15 @@ async function afterMove() {
       g.type === 'collect' ? collected[g.color] < g.count :
       g.type === 'free' ? shogCount() > 0 :
       g.type === 'idol' ? idolHp() > 0 :
-      g.type === 'drain' ? floodCount() > 0 : taintCount() > 0);
+      g.type === 'drain' ? floodCount() > 0 :
+      g.type === 'gate' ? gatesOpen() > 0 : taintCount() > 0);
     const text = missing.map(g =>
       g.type === 'score' ? `${(g.target - score).toLocaleString()} warding short` :
       g.type === 'collect' ? `${g.count - collected[g.color]} more stones needed` :
       g.type === 'free' ? `${shogCount()} stones still engulfed` :
       g.type === 'idol' ? 'the idol still stands' :
       g.type === 'drain' ? `${floodCount()} stones still under water` :
+      g.type === 'gate' ? (gatesOpen() > 1 ? `${gatesOpen()} gates still open` : 'the gate still stands open') :
       `${taintCount()} tainted tiles remain`).join(' · ');
     showOverlay('The Sleeper wakes', text, null, 'Try the rite again', () => startLevel(level), true);
   } else {
@@ -1013,6 +1207,7 @@ async function afterMove() {
       await spreadFlood();
       updateHUD();
     }
+    if (gatesOpen()) await gateTurn();
     if (!findMove()) await shuffleBoard();
   }
 }
@@ -1068,16 +1263,18 @@ async function shuffleBoard() {
 function generateBoard() {
   for (let attempt = 0; attempt < 100; attempt++) {
     grid = [];
+    const at = (r, c) => grid[r][c] ? grid[r][c].color : -2;
     for (let r = 0; r < ROWS; r++) {
       grid.push([]);
       for (let c = 0; c < COLS; c++) {
+        if (monoAt(r, c)) { grid[r].push(null); continue; }
         let col;
         do {
           col = randColor();
         } while (
-          (c >= 2 && grid[r][c - 1].color === col && grid[r][c - 2].color === col) ||
-          (r >= 2 && grid[r - 1][c].color === col && grid[r - 2][c].color === col) ||
-          (r >= 1 && c >= 1 && grid[r - 1][c - 1].color === col && grid[r - 1][c].color === col && grid[r][c - 1].color === col)
+          (c >= 2 && at(r, c - 1) === col && at(r, c - 2) === col) ||
+          (r >= 2 && at(r - 1, c) === col && at(r - 2, c) === col) ||
+          (r >= 1 && c >= 1 && at(r - 1, c - 1) === col && at(r - 1, c) === col && at(r, c - 1) === col)
         );
         grid[r].push(makePiece(col, null, c, r));
       }
@@ -1114,6 +1311,14 @@ const INTROS = {
     piece: [0, null], title: 'The Dagon Idol', idol: true,
     text: 'A Dagon idol stands in the ruins, and the sea rises around it. Stones under water can\'t be moved or matched. Clear a stone beside them, or strike them with a relic, to drain them. Three blows beside the idol topple it. While it stands, three turns without draining and the flood rises.',
   },
+  gate: {
+    piece: [0, null], title: 'The Gate of Yog\u2011Sothoth', gate: true, // a non-breaking hyphen keeps the name whole
+    text: 'A gate of Yog-Sothoth has opened. After each of your turns it swaps stones around it, once for every ring it has. Clear any stone touching it, corners included, or strike it with a relic, to break a ring. Break all three and it is gone. Leave it alone for three turns and a ring returns.',
+  },
+  mono: {
+    piece: [0, null], title: 'Monoliths', mono: true,
+    text: 'Ancient monoliths stand among the stones. No stone can be moved onto them, and nothing matches across them, but falling stones pass behind them to the cells below.',
+  },
   taint: {
     piece: [1, null], title: 'The Taint', blob: true,
     text: 'A living taint clings to some stones. Clear a stone resting on it to purge it. Go two turns without purging any, and it spreads.',
@@ -1145,9 +1350,11 @@ async function showIntro(k) {
   $('introTitle').classList.toggle('taint', !!it.blob);
   $('introTitle').classList.toggle('shog', !!it.shog);
   $('introTitle').classList.toggle('idol', !!it.idol);
+  $('introTitle').classList.toggle('mono', !!it.mono);
+  $('introTitle').classList.toggle('gate', !!it.gate);
   $('introText').textContent = it.text;
   $('introTip').textContent = tip ? COMBO_TIP : '';
-  introOpen = { blob: it.blob, shog: it.shog, idol: it.idol, iconSize: it.iconSize || .62, piece: makePiece(it.piece[0], it.piece[1], 0, 0) };
+  introOpen = { blob: it.blob, shog: it.shog, idol: it.idol, mono: it.mono, gate: it.gate, iconSize: it.iconSize || .62, piece: makePiece(it.piece[0], it.piece[1], 0, 0) };
   $('intro').classList.remove('hidden');
   beep(330, 1, 'sine', .06); beep(494, 1, 'sine', .04, .12); beep(659, 1.2, 'sine', .03, .24);
   await new Promise(res => { introResolve = res; });
@@ -1172,6 +1379,8 @@ function drawIntroIcon(now) {
   c.setTransform(1, 0, 0, 1, 0, 0);
   c.clearRect(0, 0, s, s);
   if (introOpen.idol) { drawIdolIntro(c, s, now); return; }
+  if (introOpen.gate) { drawOrrery(c, s / 2, s / 2, s * .5, now); return; }
+  if (introOpen.mono) { drawMenhir(c, s * .14, s * .2, s * .72, s * .72, s * .72, now, 5); return; }
   if (introOpen.blob) drawBlob(c, s / 2, s / 2, s * .36, now, 3);
   drawPiece(c, introOpen.piece, s / 2, s / 2, s * introOpen.iconSize, now, 1);
   if (introOpen.shog) drawShoggothIcon(c, s / 2, s / 2, s * .72, now);
@@ -1188,9 +1397,11 @@ async function startLevel(n) {
   collected = new Array(NC).fill(0);
   particles = []; fx = []; floats = []; banner = null; wreck = null; resetBoardSink();
   selected = null; hint = null; drag = null; idleTurns = 0; pendingIntros = [];
+  seedMonoliths(cfg.monoliths);
   seedTaint(cfg.taint);
   seedShoggoth(cfg.shoggoth);
   seedIdol(cfg.idol);
+  seedGates(cfg.gates);
   generateBoard();
   buildGoals();
   state = 'playing';
@@ -1203,9 +1414,11 @@ async function startLevel(n) {
     anims.push(wait((ROWS - r) * 30 + c * 15).then(() => tween(p, { y: r }, 450, ease.outBack)));
   });
   await Promise.all(anims);
+  if (monoliths.length && !seenIntros.has('mono')) { await wait(700); await showIntro('mono'); }
   if (cfg.taint && !seenIntros.has('taint')) { await wait(700); await showIntro('taint'); }
   if (cfg.shoggoth && !seenIntros.has('shog')) { await wait(700); await showIntro('shog'); }
   if (cfg.idol && !seenIntros.has('idol')) { await wait(700); await showIntro('idol'); }
+  if (cfg.gates && !seenIntros.has('gate')) { await wait(700); await showIntro('gate'); }
   busy = false;
   lastInput = performance.now();
 }
@@ -1239,6 +1452,7 @@ function buildGoals() {
         : g.type === 'free' ? drawShoggothIcon(ic, s / 2, s / 2, s * .9, 0)
         : g.type === 'idol' ? drawIdol(ic, s / 2, s / 2, s * 1.05, 0, IDOL_HP, 0, 1, false)
         : g.type === 'drain' ? drawWaterIcon(ic, s / 2, s / 2, s * .9)
+        : g.type === 'gate' ? drawOrrery(ic, s / 2, s / 2, s * .62, 0)
         : drawBlob(ic, s / 2, s / 2, s * .36, 0, 7)));
       const sp = document.createElement('span');
       sp.className = 'count';
@@ -1266,7 +1480,7 @@ function updateHUD() {
       el.querySelector('.count').textContent = `${Math.min(collected[g.color], g.count)}/${g.count}`;
       el.classList.toggle('done', collected[g.color] >= g.count);
     } else {
-      const n = g.type === 'free' ? shogCount() : g.type === 'idol' ? idolHp() : g.type === 'drain' ? floodCount() : taintCount();
+      const n = g.type === 'free' ? shogCount() : g.type === 'idol' ? idolHp() : g.type === 'drain' ? floodCount() : g.type === 'gate' ? gatesOpen() : taintCount();
       el.querySelector('.count').textContent = n ? `${n} left` : '';
       el.classList.toggle('done', n === 0);
     }
@@ -1978,6 +2192,150 @@ function drawIdolIntro(c, s, now) {
 }
 
 // A drop of sea water, for the drain goal.
+// ---------- Rendering: gates ----------
+// An iridescent globe with an oil-slick rim, a dark heart and a glint.
+function drawGlobe(c, x, y, r, hue, a = 1) {
+  const g = c.createRadialGradient(x - r * .3, y - r * .35, r * .05, x, y, r);
+  g.addColorStop(0, `hsla(${hue + 40},90%,85%,${.9 * a})`);
+  g.addColorStop(.35, `hsla(${hue},70%,35%,${.85 * a})`);
+  g.addColorStop(.75, `rgba(6,4,14,${.92 * a})`);
+  g.addColorStop(1, `hsla(${hue + 120},90%,65%,${.8 * a})`);
+  c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = g; c.fill();
+  c.lineWidth = Math.max(1, r * .1); c.strokeStyle = `hsla(${hue + 180},90%,72%,${.5 * a})`; c.stroke();
+  c.beginPath(); c.arc(x - r * .35, y - r * .4, r * .16, 0, TAU); c.fillStyle = `rgba(255,255,255,${.6 * a})`; c.fill();
+}
+
+// The Orrery: rings of light turning on different axes around a bright core, a globe riding
+// each. `ring` holds each ring's presence (0–1); a breaking ring swells outward as it fades.
+function drawOrrery(c, cx, cy, cs, now, ring = [1, 1, 1], open = 1, flash = 0) {
+  const s = cs * open;
+  if (s <= 0) return;
+  const h = (now / 25) % 360;
+  c.save(); c.globalCompositeOperation = 'lighter';
+  const R = s * 1.3, hl = c.createRadialGradient(cx, cy, R * .1, cx, cy, R);
+  hl.addColorStop(0, `hsla(${h},80%,65%,${.3 + .4 * flash})`); hl.addColorStop(.5, `hsla(${h + 90},80%,55%,.1)`); hl.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = hl; c.fillRect(cx - R, cy - R, R * 2, R * 2);
+  c.restore();
+  const rings = [0, 1, 2].map(i => {
+    const grow = 1 + (1 - ring[i]) * .5;
+    return { k: ring[i], rx: s * (.55 + i * .32) * grow, ry: s * (.18 + i * .1) * grow, rot: now / (5000 + i * 1700) * (i % 2 ? -1 : 1) + i, hue: (now / 20 + i * 120) % 360, a: now / (900 + i * 500) + i * 2 };
+  }).filter(rg => rg.k > .01);
+  // back halves of the rings, then the core, then the front halves; globes go with their half
+  const half = (rg, front) => {
+    c.save(); c.translate(cx, cy); c.rotate(rg.rot);
+    c.globalCompositeOperation = 'lighter';
+    c.beginPath(); c.ellipse(0, 0, rg.rx, rg.ry, 0, front ? 0 : Math.PI, front ? Math.PI : TAU);
+    c.strokeStyle = `hsla(${rg.hue},85%,68%,${(front ? .6 : .28) * rg.k})`; c.lineWidth = Math.max(1, cs * .028); c.stroke();
+    c.globalCompositeOperation = 'source-over';
+    if ((Math.sin(rg.a) >= 0) === front) drawGlobe(c, Math.cos(rg.a) * rg.rx, Math.sin(rg.a) * rg.ry, s * .14, rg.hue, rg.k);
+    c.restore();
+  };
+  rings.forEach(rg => half(rg, false));
+  const cr = s * .3 * (1 + .25 * flash);
+  const core = c.createRadialGradient(cx, cy, 0, cx, cy, cr), ch = (now / 12) % 360;
+  core.addColorStop(0, '#ffffff'); core.addColorStop(.3, `hsl(${ch},90%,75%)`); core.addColorStop(.7, `hsla(${ch + 60},80%,40%,.8)`); core.addColorStop(1, 'rgba(0,0,0,0)');
+  c.beginPath(); c.arc(cx, cy, cr, 0, TAU); c.fillStyle = core; c.fill();
+  rings.forEach(rg => half(rg, true));
+}
+
+// the reach: a slow oil-slick shimmer over the eight cells an open gate can swap
+function drawGateReach(now) {
+  for (const g of gates) {
+    const k = g.rings > 0 ? Math.max(0, Math.min(1, g.shown)) : 1 - g.gone;
+    if (k <= 0) continue;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let dr = -1; dr <= 1; dr++)
+      for (let dc = -1; dc <= 1; dc++) {
+        const r = g.r + dr, c = g.c + dc;
+        if (!(dr || dc) || !inBounds(r, c) || monoAt(r, c)) continue;
+        const x = PAD + c * cell + 2, y = PAD + r * cell + 2, w = cell - 4, hue = (now / 30 + (r * 3 + c) * 40) % 360;
+        ctx.beginPath(); roundRectPath(ctx, x, y, w, w, cell * .14);
+        ctx.fillStyle = `hsla(${hue},70%,60%,${(.08 + .03 * Math.sin(now / 700 + r + c)) * k})`; ctx.fill();
+        ctx.strokeStyle = `hsla(${hue},80%,70%,${.26 * k})`; ctx.lineWidth = 1; ctx.stroke();
+      }
+    ctx.restore();
+  }
+}
+
+function drawGateLayer(now) {
+  for (const g of gates) {
+    const open = g.rings > 0 ? ease.outBack(Math.max(0, Math.min(1, g.shown))) : 1 - ease.inOut(g.gone);
+    if (open <= .02) continue;
+    drawOrrery(ctx, PAD + (g.c + .5) * cell, PAD + (g.r + .5) * cell, cell, now, g.ring, open, g.flash);
+  }
+  // the thread a swap is drawn along, through the gate's heart
+  for (const { g, a, b, o } of gateSwaps) {
+    const al = Math.sin(o.t * Math.PI);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    ctx.beginPath();
+    ctx.moveTo(...cellCenter(a.r, a.c));
+    ctx.quadraticCurveTo(...cellCenter(g.r, g.c), ...cellCenter(b.r, b.c));
+    ctx.strokeStyle = `hsla(${(now / 15) % 360},90%,70%,${.5 * al})`; ctx.lineWidth = Math.max(1.5, cell * .05); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---------- Rendering: monoliths ----------
+// A rough standing stone streaked with lichen, carved with a faintly lit eye sign. It rises a
+// little above its footprint, so the stones falling behind it read as passing behind.
+function drawMenhir(c, x, y, w, h, cs, now, seed) {
+  const rand = rng(seed), big = w > cs * 1.5;
+  const cx = x + w / 2, base = y + h - cs * .12, top = y - cs * (big ? .28 : .18);
+  const bw = w * .4, tw = w * .27;
+  c.save();
+  const sh = c.createRadialGradient(cx + cs * .06, base, 0, cx + cs * .06, base, bw * 1.15);
+  sh.addColorStop(0, 'rgba(0,0,0,.6)'); sh.addColorStop(1, 'rgba(0,0,0,0)');
+  c.save(); c.translate(0, base); c.scale(1, .22 * (big ? 1.3 : 1)); c.translate(0, -base);
+  c.fillStyle = sh; c.fillRect(cx - bw * 1.3, base - bw * 1.3, bw * 2.8, bw * 2.6);
+  c.restore();
+  // the outline: a lumpy tapering slab with a rounded crown
+  const pts = [], n = 7;
+  for (let k = 0; k <= n; k++) { const t = k / n; pts.push([cx - bw + (bw - tw) * t + (rand() - .5) * cs * .07, base - (base - top) * t * .86]); }
+  pts.push([cx - tw * .5, top + (rand() - .5) * cs * .05], [cx + tw * .35, top - cs * .02]);
+  for (let k = n; k >= 0; k--) { const t = k / n; pts.push([cx + bw - (bw - tw) * t + (rand() - .5) * cs * .07, base - (base - top) * t * .86]); }
+  const outline = () => {
+    c.beginPath(); c.moveTo(pts[0][0], pts[0][1]);
+    for (let k = 1; k < pts.length; k++) { const [px, py] = pts[k], [qx, qy] = pts[k - 1]; c.quadraticCurveTo(qx, qy, (px + qx) / 2, (py + qy) / 2); }
+    c.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+    c.quadraticCurveTo(cx, base + cs * .06, pts[0][0], pts[0][1]);
+    c.closePath();
+  };
+  outline();
+  const g = c.createLinearGradient(cx - bw, 0, cx + bw, 0);
+  g.addColorStop(0, '#87918a'); g.addColorStop(.35, '#5e6862'); g.addColorStop(1, '#2a302d');
+  c.fillStyle = g; c.fill();
+  c.save(); c.clip();
+  const v = c.createLinearGradient(0, top, 0, base);
+  v.addColorStop(0, 'rgba(255,255,255,.07)'); v.addColorStop(.7, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.45)');
+  c.fillStyle = v; c.fillRect(x - cs, top - cs, w + cs * 2, base - top + cs * 2);
+  // lichen and pits
+  for (let k = 0; k < (big ? 40 : 16); k++) {
+    const px = cx + (rand() - .5) * bw * 1.8, py = top + rand() * (base - top);
+    c.beginPath(); c.arc(px, py, cs * (.015 + rand() * .035), 0, TAU);
+    c.fillStyle = rand() < .55 ? `rgba(165,185,120,${.14 + rand() * .16})` : 'rgba(0,0,0,.28)'; c.fill();
+  }
+  // the carved sign: an eye above three trailing strokes, its grooves faintly lit
+  const gx = cx - bw * .04, gr = tw * (big ? .62 : .7), gy = top + (base - top) * .4 - gr * .3;
+  c.beginPath();
+  c.moveTo(gx - gr, gy); c.quadraticCurveTo(gx, gy - gr * .9, gx + gr, gy); c.quadraticCurveTo(gx, gy + gr * .9, gx - gr, gy);
+  c.moveTo(gx + gr * .22, gy); c.arc(gx, gy, gr * .22, 0, TAU);
+  for (let k = -1; k <= 1; k++) { c.moveTo(gx + k * gr * .45, gy + gr * .6); c.quadraticCurveTo(gx + k * gr * .65, gy + gr * 1.05, gx + k * gr * .4, gy + gr * 1.45); }
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  c.strokeStyle = 'rgba(0,0,0,.55)'; c.lineWidth = Math.max(1.5, cs * .055); c.stroke();
+  c.globalCompositeOperation = 'lighter';
+  c.strokeStyle = `rgba(80,220,200,${.16 + .08 * Math.sin(now / 1000 + seed)})`; c.lineWidth = Math.max(1, cs * .022); c.stroke();
+  c.restore();
+  outline(); c.strokeStyle = 'rgba(0,0,0,.7)'; c.lineWidth = Math.max(1, cs * .035); c.stroke();
+  c.restore();
+}
+
+function drawMonolithLayer(now) {
+  // lower monoliths overlap the crowns of those behind them
+  const order = [...monoliths].sort((a, b) => (a.r + a.s) - (b.r + b.s));
+  for (const m of order) drawMenhir(ctx, PAD + m.c * cell, PAD + m.r * cell, cell * m.s, cell * m.s, cell, now, m.seed);
+}
+
 function drawWaterIcon(c, cx, cy, size) {
   const s = size * .5;
   c.save();
@@ -2619,7 +2977,7 @@ function relicPreview() {
   if (!A) return null;
   const cells = new Set(), aims = [];
   let color = GLOW.ley;
-  const add = (r, c) => { if (inBounds(r, c)) cells.add(key(r, c)); };
+  const add = (r, c) => { if (inBounds(r, c) && !monoAt(r, c)) cells.add(key(r, c)); };
   const area = (sp, r, c) => {
     if (sp === 'h') for (let cc = 0; cc < COLS; cc++) add(r, cc);
     else if (sp === 'v') for (let rr = 0; rr < ROWS; rr++) add(rr, c);
@@ -2710,6 +3068,7 @@ function draw(now) {
     }
   }
   if (taintFill.length) drawTaintLayer(now);
+  drawGateReach(now);
   if (selected) {
     const x = PAD + selected.c * cell + 2, y = PAD + selected.r * cell + 2;
     ctx.beginPath(); roundRectPath(ctx, x, y, cell - 4, cell - 4, cell * .14);
@@ -2725,7 +3084,7 @@ function draw(now) {
   ctx.save();
   ctx.beginPath(); ctx.rect(PAD, PAD, cell * COLS, cell * ROWS); ctx.clip();
   forEachPiece((p, r, c) => {
-    if (p === dragged || p.fly || idolAt(r, c)) return;
+    if (p === dragged || p.fly || idolAt(r, c) || gateAt(r, c)) return;
     let mult = 1, dy = 0;
     if (hintPieces.includes(p)) mult = 1 + 0.1 * Math.sin(now / 110);
     if (selected && selected.r === r && selected.c === c) dy = Math.sin(now / 140) * cell * .05;
@@ -2736,6 +3095,8 @@ function draw(now) {
   drawShoggothLayer(now);
   drawFloodLayer(now);
   drawIdolLayer(now);
+  drawGateLayer(now);
+  drawMonolithLayer(now);
   if (pv && pv.aims.length) drawAims(pv.aims, .8);
 
   for (const f of fx) {
@@ -2850,6 +3211,14 @@ function frame(now) {
     for (let c = 0; c < COLS; c++)
       shogFill[r][c] = shog[r][c] ? Math.min(1, shogFill[r][c] + dt / 600) : Math.max(0, shogFill[r][c] - dt / 260);
   // water rises slowly like a tide and drains away quickly
+  // rings fade out as they break and back in as they return; a closed gate collapses
+  for (const g of gates) {
+    g.shown = Math.min(1, g.shown + dt / 600);
+    g.flash = Math.max(0, g.flash - dt / 450);
+    g.ring = g.ring.map((v, i) => i < g.rings ? Math.min(1, v + dt / 500) : Math.max(0, v - dt / 450));
+    if (g.rings <= 0) g.gone = Math.min(1, g.gone + dt / 700);
+  }
+  updateGateSwaps();
   for (let r = 0; r < floodFill.length; r++)
     for (let c = 0; c < COLS; c++)
       floodFill[r][c] = flood[r][c] ? Math.min(1, floodFill[r][c] + dt / 700) : Math.max(0, floodFill[r][c] - dt / 300);
@@ -2881,7 +3250,7 @@ canvas.addEventListener('pointerdown', e => {
   hint = null;
   if (busy || state !== 'playing') return;
   const at = cellAt(e);
-  if (!at || lockedAt(at.r, at.c)) return;
+  if (!at || lockedAt(at.r, at.c) || monoAt(at.r, at.c)) return;
   if (selected && Math.abs(selected.r - at.r) + Math.abs(selected.c - at.c) === 1) {
     const s = selected;
     selected = null;
@@ -2918,7 +3287,7 @@ function dragTo(e) {
   const s = drag.start, A = grid[s.r][s.c];
   const raw = (drag.axis === 'h' ? dx : dy) / cell, sign = Math.sign(raw);
   const n = drag.axis === 'h' ? { r: s.r, c: s.c + sign } : { r: s.r + sign, c: s.c };
-  if (!sign || !inBounds(n.r, n.c) || lockedAt(n.r, n.c)) {
+  if (!sign || !inBounds(n.r, n.c) || lockedAt(n.r, n.c) || monoAt(n.r, n.c)) {
     resetNeighbor();
     A.x = s.c; A.y = s.r; drag.offset = 0;
     return;
@@ -2985,7 +3354,9 @@ resize();
 cfg = levelConfig(level);
 collected = new Array(NC).fill(0);
 seedShoggoth(0);
+seedMonoliths(null);
 seedIdol(false);
+seedGates(0);
 generateBoard();
 seedTaint(0);
 buildGoals();
@@ -3000,5 +3371,7 @@ window.cascade = {
   get grid() { return grid; }, get taint() { return taint; }, trySwap, findMove,
   get state() { return state; }, get busy() { return busy; }, get bolts() { return bolts; },
   get introOpen() { return introOpen; }, get seenIntros() { return seenIntros; },
+  get mono() { return mono; }, get monoliths() { return monoliths; }, levelConfig, applyGravity, startLevel,
+  get gates() { return gates; },
 };
 })();

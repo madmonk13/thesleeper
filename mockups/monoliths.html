@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monoliths</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #e4f5ee; --muted: rgba(200, 235, 222, .72); --edge: rgba(125, 255, 200, .16); }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    font-family: "IM Fell English", Georgia, serif;
+    background: radial-gradient(ellipse at 50% 0%, #0b2421 0%, #04100f 45%, #020807 100%) fixed;
+  }
+  header { max-width: 1100px; margin: 0 auto; padding: 28px 16px 4px; text-align: center; }
+  h1 {
+    margin: 0 0 6px;
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 900;
+    font-size: 30px;
+    color: #c9ffe8;
+    text-shadow: 0 0 18px rgba(61, 255, 176, .4);
+  }
+  header p { margin: 0 auto; max-width: 660px; font-size: 19px; line-height: 1.5; color: #e2f2ec; }
+  .controls { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; margin: 16px 0 4px; }
+  button {
+    font-family: Cinzel, Georgia, serif;
+    font-weight: 700;
+    letter-spacing: .06em;
+    color: var(--ink);
+    border: 1px solid rgba(125, 255, 200, .3);
+    background: rgba(6, 24, 22, .6);
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button.on { background: rgba(40, 120, 96, .6); border-color: rgba(125, 255, 200, .6); }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 12px 16px 40px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+    gap: 18px;
+  }
+  .study {
+    background: linear-gradient(180deg, rgba(14, 44, 39, .55), rgba(4, 16, 14, .75));
+    border: 1px solid var(--edge);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .study h2 { margin: 0; font-family: Cinzel, Georgia, serif; font-size: 20px; letter-spacing: .05em; }
+  .study .tag {
+    margin: 2px 0 12px;
+    font-family: Cinzel, Georgia, serif;
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .board { display: block; width: 100%; }
+  .row { display: flex; gap: 14px; align-items: center; margin-top: 12px; }
+  .row canvas { flex: none; display: block; }
+  .study p { margin: 0; font-size: 18px; line-height: 1.45; color: #e2f2ec; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Monoliths</h1>
+    <p>Four looks for the monoliths, each on a full board. Every layout uses single-cell and 2×2 monoliths in even numbers, placed symmetrically. Use the buttons to switch layouts.</p>
+    <div class="controls" id="layouts"></div>
+  </header>
+  <main id="studies"></main>
+
+<script>
+(() => {
+'use strict';
+
+const COLS = 8, ROWS = 10, PAD = 8, TAU = Math.PI * 2;
+const STONES = [
+  { shape: 'circle',   light: '#a9ecd6', fill: '#3e9c86', dark: '#103b33' },
+  { shape: 'square',   light: '#fff6e0', fill: '#cdbf9c', dark: '#5f5440' },
+  { shape: 'star',     light: '#ffb8a6', fill: '#c4543f', dark: '#521810' },
+  { shape: 'diamond',  light: '#c4aef0', fill: '#5d3f8f', dark: '#1c0f31' },
+  { shape: 'hex',      light: '#d4f7a4', fill: '#7aa83e', dark: '#243f12' },
+  { shape: 'triangle', light: '#ffe6a8', fill: '#c9932f', dark: '#563809' },
+];
+// [row, col, size]: size 1 is one cell, size 2 is a 2×2 block anchored at its top-left
+const LAYOUTS = [
+  { name: 'Four Sentinels', m: [[2, 1, 1], [2, 6, 1], [7, 1, 1], [7, 6, 1]] },
+  { name: 'Twin Pillars', m: [[4, 1, 2], [4, 5, 2]] },
+  { name: 'The Gate', m: [[2, 3, 2], [6, 3, 2], [4, 0, 1], [5, 0, 1], [4, 7, 1], [5, 7, 1]] },
+  { name: 'Pinwheel', m: [[1, 1, 2], [7, 5, 2], [1, 6, 1], [8, 1, 1], [4, 3, 1], [5, 4, 1]] },
+];
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const rng = seed => { let i = 0; return () => hash(seed * 97.3 + i++ * 13.1); };
+const dpr = Math.min(2, window.devicePixelRatio || 1);
+
+// ---------- board and stones (simplified from the game) ----------
+function roundRectPath(c, x, y, w, h, r) {
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function shapePath(c, shape, cx, cy, r) {
+  c.beginPath();
+  switch (shape) {
+    case 'circle': c.arc(cx, cy, r * .9, 0, TAU); break;
+    case 'square': roundRectPath(c, cx - r * .8, cy - r * .8, r * 1.6, r * 1.6, r * .22); break;
+    case 'star':
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + i * Math.PI / 5, rad = i % 2 ? r * .52 : r * 1.02;
+        const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad + r * .06;
+        i ? c.lineTo(px, py) : c.moveTo(px, py);
+      }
+      c.closePath();
+      break;
+    case 'diamond':
+      c.moveTo(cx, cy - r); c.lineTo(cx + r * .78, cy); c.lineTo(cx, cy + r); c.lineTo(cx - r * .78, cy);
+      c.closePath();
+      break;
+    case 'hex':
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3, px = cx + Math.cos(a) * r * .92, py = cy + Math.sin(a) * r * .92;
+        i ? c.lineTo(px, py) : c.moveTo(px, py);
+      }
+      c.closePath();
+      break;
+    case 'triangle':
+      c.moveTo(cx, cy - r * .92); c.lineTo(cx + r * .95, cy + r * .72); c.lineTo(cx - r * .95, cy + r * .72);
+      c.closePath();
+      break;
+  }
+}
+
+function drawStone(c, st, cx, cy, r) {
+  shapePath(c, st.shape, cx, cy + r * .1, r);
+  c.fillStyle = 'rgba(0,0,0,.45)'; c.fill();
+  shapePath(c, st.shape, cx, cy, r);
+  const g = c.createLinearGradient(cx - r * .4, cy - r, cx + r * .4, cy + r);
+  g.addColorStop(0, st.light); g.addColorStop(.38, st.fill); g.addColorStop(1, st.dark);
+  c.fillStyle = g; c.fill();
+  c.lineJoin = 'round'; c.lineWidth = Math.max(1, r * .07); c.strokeStyle = st.dark; c.stroke();
+}
+
+function drawBoard(c, cs, W, H, blocked) {
+  c.beginPath(); roundRectPath(c, 0, 0, W, H, 14);
+  c.fillStyle = 'rgba(3,12,12,.55)'; c.fill();
+  c.strokeStyle = 'rgba(125,255,200,.14)'; c.lineWidth = 1.5; c.stroke();
+  for (let r = 0; r < ROWS; r++) {
+    for (let col = 0; col < COLS; col++) {
+      const x = PAD + col * cs + 2, y = PAD + r * cs + 2, w = cs - 4;
+      c.beginPath(); roundRectPath(c, x, y, w, w, cs * .14);
+      c.fillStyle = (r + col) % 2 ? 'rgba(140,190,175,.05)' : 'rgba(140,190,175,.1)';
+      c.fill();
+      c.strokeStyle = 'rgba(0,0,0,.35)'; c.lineWidth = 1; c.stroke();
+      if (!blocked.has(r * COLS + col)) drawStone(c, STONES[Math.floor(hash(r * 31 + col * 7 + 3) * 6)], PAD + (col + .5) * cs, PAD + (r + .5) * cs, cs * .42);
+    }
+  }
+}
+
+function dropShadow(c, x, y, w, h, cs, round = .16) {
+  c.save();
+  c.shadowColor = 'rgba(0,0,0,.75)'; c.shadowBlur = cs * .25; c.shadowOffsetY = cs * .1;
+  c.beginPath(); roundRectPath(c, x, y, w, h, cs * round);
+  c.fillStyle = 'rgba(0,0,0,.6)'; c.fill();
+  c.restore();
+}
+
+// ---------- 1. Basalt Columns ----------
+// a cluster of hexagonal basalt columns of uneven height, seen from above
+function drawColumns(c, x, y, w, h, cs, now, seed) {
+  const i = cs * .05, X = x + i, Y = y + i, W = w - i * 2, H = h - i * 2;
+  const R = cs * .25, rand = rng(seed);
+  dropShadow(c, X, Y, W, H, cs);
+  c.save();
+  c.beginPath(); roundRectPath(c, X, Y - cs * .12, W, H + cs * .12, cs * .16); c.clip();
+  c.fillStyle = '#050707'; c.fillRect(X, Y - cs * .12, W, H + cs * .12);
+  const hexes = [];
+  for (let col = -1; col * R * 1.5 < W + R; col++) {
+    for (let row = -1; row * R * Math.sqrt(3) < H + R * 2; row++) {
+      const cx = X + col * R * 1.5, cy = Y + row * R * Math.sqrt(3) + (col & 1 ? R * Math.sqrt(3) / 2 : 0);
+      hexes.push({ cx, cy, lift: rand() * cs * .1, tone: rand() });
+    }
+  }
+  hexes.sort((a, b) => a.cy - b.cy);
+  const hex = (cx, cy, r) => {
+    c.beginPath();
+    for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3; k ? c.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r) : c.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r); }
+    c.closePath();
+  };
+  for (const hx of hexes) {
+    const top = hx.cy - hx.lift;
+    // the column's flank, then its cap
+    hex(hx.cx, hx.cy, R * .96); c.fillStyle = '#080b0b'; c.fill();
+    c.fillStyle = '#080b0b'; c.fillRect(hx.cx - R * .96, top, R * 1.92, hx.lift);
+    hex(hx.cx, top, R * .96);
+    const g = c.createLinearGradient(hx.cx - R, top - R, hx.cx + R, top + R);
+    const l = 40 + hx.tone * 24 + hx.lift / cs * 240;
+    g.addColorStop(0, `rgb(${l * .9},${l},${l})`); g.addColorStop(1, `rgb(${l * .35},${l * .42},${l * .42})`);
+    c.fillStyle = g; c.fill();
+    c.lineWidth = Math.max(1, cs * .025); c.strokeStyle = 'rgba(0,0,0,.7)'; c.stroke();
+    // a wet sheen along the lit edge
+    c.beginPath();
+    c.moveTo(hx.cx - R * .96, top); c.lineTo(hx.cx - R * .48, top - R * .83); c.lineTo(hx.cx + R * .48, top - R * .83);
+    c.strokeStyle = 'rgba(170,215,205,.2)'; c.lineWidth = Math.max(1, cs * .02); c.stroke();
+  }
+  c.restore();
+  c.beginPath(); roundRectPath(c, X, Y - cs * .12, W, H + cs * .12, cs * .16);
+  c.strokeStyle = 'rgba(0,0,0,.8)'; c.lineWidth = Math.max(1, cs * .04); c.stroke();
+}
+
+// ---------- 2. Menhir ----------
+// a rough standing stone that rises above its footprint, with lichen and a faint carved spiral
+function drawMenhir(c, x, y, w, h, cs, now, seed) {
+  const rand = rng(seed), big = w > cs * 1.5;
+  const cx = x + w / 2, base = y + h - cs * .12, top = y - cs * (big ? .32 : .2);
+  const bw = w * .4, tw = w * .27;
+  c.save();
+  c.fillStyle = 'rgba(0,0,0,.55)';
+  c.beginPath(); c.ellipse(cx + cs * .06, base + cs * .02, bw * 1.05, cs * .13 * (big ? 1.6 : 1), 0, 0, TAU);
+  c.filter = `blur(${cs * .06}px)`; c.fill(); c.filter = 'none';
+  // the outline: a lumpy tapering slab with a rounded crown
+  const pts = [];
+  const n = 7;
+  for (let k = 0; k <= n; k++) { const t = k / n; pts.push([cx - bw + (bw - tw) * t + (rand() - .5) * cs * .07, base - (base - top) * t * .86]); }
+  pts.push([cx - tw * .5, top + (rand() - .5) * cs * .05], [cx + tw * .35, top - cs * .02]);
+  for (let k = n; k >= 0; k--) { const t = k / n; pts.push([cx + bw - (bw - tw) * t + (rand() - .5) * cs * .07, base - (base - top) * t * .86]); }
+  const outline = () => {
+    c.beginPath(); c.moveTo(pts[0][0], pts[0][1]);
+    for (let k = 1; k < pts.length; k++) { const [px, py] = pts[k], [qx, qy] = pts[k - 1]; c.quadraticCurveTo(qx, qy, (px + qx) / 2, (py + qy) / 2); }
+    c.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+    c.quadraticCurveTo(cx, base + cs * .06, pts[0][0], pts[0][1]);
+    c.closePath();
+  };
+  outline();
+  const g = c.createLinearGradient(cx - bw, 0, cx + bw, 0);
+  g.addColorStop(0, '#5d6660'); g.addColorStop(.35, '#3a423e'); g.addColorStop(1, '#121614');
+  c.fillStyle = g; c.fill();
+  c.save(); c.clip();
+  const v = c.createLinearGradient(0, top, 0, base);
+  v.addColorStop(0, 'rgba(255,255,255,.06)'); v.addColorStop(.7, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.5)');
+  c.fillStyle = v; c.fillRect(x - cs, top - cs, w + cs * 2, base - top + cs * 2);
+  // lichen and pits
+  for (let k = 0; k < (big ? 40 : 16); k++) {
+    const px = cx + (rand() - .5) * bw * 1.8, py = top + rand() * (base - top);
+    c.beginPath(); c.arc(px, py, cs * (.015 + rand() * .035), 0, TAU);
+    c.fillStyle = rand() < .55 ? `rgba(150,170,110,${.12 + rand() * .15})` : 'rgba(0,0,0,.3)'; c.fill();
+  }
+  // a carved spiral, its groove holding a faint ley glow
+  const sx = cx - bw * .05, sy = top + (base - top) * .45, sr = tw * .6;
+  c.beginPath();
+  for (let a = 0; a < TAU * 2.2; a += .15) { const rr = sr * a / (TAU * 2.2); const px = sx + Math.cos(a) * rr, py = sy + Math.sin(a) * rr * 1.1; a ? c.lineTo(px, py) : c.moveTo(px, py); }
+  c.lineCap = 'round';
+  c.strokeStyle = 'rgba(0,0,0,.55)'; c.lineWidth = Math.max(1.5, cs * .05); c.stroke();
+  c.globalCompositeOperation = 'lighter';
+  c.strokeStyle = `rgba(61,255,176,${.12 + .08 * Math.sin(now / 1100 + seed)})`; c.lineWidth = Math.max(1, cs * .022); c.stroke();
+  c.restore();
+  outline(); c.strokeStyle = 'rgba(0,0,0,.75)'; c.lineWidth = Math.max(1, cs * .035); c.stroke();
+  c.restore();
+}
+
+// ---------- 3. Obsidian ----------
+// a faceted block of volcanic glass with ley-green veins pulsing deep inside
+function drawObsidian(c, x, y, w, h, cs, now, seed) {
+  const rand = rng(seed), big = w > cs * 1.5;
+  const i = cs * .07, X = x + i, Y = y + i, W = w - i * 2, H = h - i * 2;
+  const n = big ? 16 : 10, pts = [];
+  for (let k = 0; k < n; k++) {
+    const t = k / n * 4, side = Math.floor(t), u = t - side, j = (rand() - .5) * cs * .1;
+    pts.push(side === 0 ? [X + u * W, Y + j] : side === 1 ? [X + W + j, Y + u * H] : side === 2 ? [X + W - u * W, Y + H + j] : [X + j, Y + H - u * H]);
+  }
+  const ax = X + W * (.42 + rand() * .1), ay = Y + H * (.38 + rand() * .1);
+  dropShadow(c, X, Y, W, H, cs, .05);
+  const light = Math.atan2(-1, -1.2);
+  for (let k = 0; k < n; k++) {
+    const [px, py] = pts[k], [qx, qy] = pts[(k + 1) % n];
+    const a = Math.atan2((py + qy) / 2 - ay, (px + qx) / 2 - ax);
+    const lit = .5 + .5 * Math.cos(a - light), wob = rand() * .25;
+    const l = 8 + (lit * .8 + wob) * 46;
+    c.beginPath(); c.moveTo(ax, ay); c.lineTo(px, py); c.lineTo(qx, qy); c.closePath();
+    c.fillStyle = `rgb(${l * .82},${l * .9},${l * 1.05})`; c.fill();
+    c.strokeStyle = `rgba(190,220,255,${.08 + lit * .22})`; c.lineWidth = Math.max(1, cs * .018); c.stroke();
+  }
+  // veins: jagged strands spreading from the heart, pulsing slowly
+  c.save();
+  c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for (const p of pts) c.lineTo(p[0], p[1]); c.closePath(); c.clip();
+  c.globalCompositeOperation = 'lighter'; c.lineCap = 'round'; c.lineJoin = 'round';
+  const pulse = .5 + .5 * Math.sin(now / 1300 + seed * 2);
+  for (let v = 0; v < (big ? 5 : 3); v++) {
+    let px = ax, py = ay, a = rand() * TAU;
+    c.beginPath(); c.moveTo(px, py);
+    for (let s = 0; s < 5; s++) { a += (rand() - .5) * 1.2; px += Math.cos(a) * cs * .14; py += Math.sin(a) * cs * .14; c.lineTo(px, py); }
+    c.strokeStyle = `rgba(61,255,176,${.1 + .18 * pulse})`; c.lineWidth = Math.max(1.5, cs * .05); c.stroke();
+    c.strokeStyle = `rgba(190,255,225,${.12 + .25 * pulse})`; c.lineWidth = Math.max(.8, cs * .015); c.stroke();
+  }
+  c.restore();
+  // a hard specular glint on the facing edge
+  c.beginPath(); c.moveTo(ax, ay); c.lineTo(pts[Math.floor(n * .85)][0], pts[Math.floor(n * .85)][1]);
+  c.strokeStyle = 'rgba(235,245,255,.45)'; c.lineWidth = Math.max(1, cs * .02); c.stroke();
+  c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for (const p of pts) c.lineTo(p[0], p[1]); c.closePath();
+  c.strokeStyle = 'rgba(0,0,0,.85)'; c.lineWidth = Math.max(1, cs * .035); c.stroke();
+}
+
+// ---------- 4. Sunken Masonry ----------
+// a block of R'lyeh's Cyclopean stonework, its corners not quite square, crusted with barnacles
+function drawMasonry(c, x, y, w, h, cs, now, seed) {
+  const rand = rng(seed), big = w > cs * 1.5;
+  const i = cs * .05, j = () => (rand() - .5) * cs * .1;
+  const q = [[x + i + j(), y + i + j()], [x + w - i + j(), y + i + j()], [x + w - i + j(), y + h - i + j()], [x + i + j(), y + h - i + j()]];
+  const quad = (k = 0) => {
+    const mx = (q[0][0] + q[2][0]) / 2, my = (q[0][1] + q[2][1]) / 2;
+    c.beginPath();
+    q.forEach(([px, py], n) => { const ux = px + (mx - px) * k, uy = py + (my - py) * k; n ? c.lineTo(ux, uy) : c.moveTo(ux, uy); });
+    c.closePath();
+  };
+  c.save();
+  c.shadowColor = 'rgba(0,0,0,.75)'; c.shadowBlur = cs * .25; c.shadowOffsetY = cs * .1;
+  quad(); c.fillStyle = '#1a221f'; c.fill();
+  c.restore();
+  const g = c.createLinearGradient(x, y, x + w, y + h);
+  g.addColorStop(0, '#5b6b62'); g.addColorStop(.55, '#33403a'); g.addColorStop(1, '#161d1a');
+  quad(); c.fillStyle = g; c.fill();
+  c.save(); quad(); c.clip();
+  // pitted, weathered face
+  for (let k = 0; k < (big ? 70 : 24); k++) {
+    c.beginPath(); c.arc(x + rand() * w, y + rand() * h, cs * (.01 + rand() * .03), 0, TAU);
+    c.fillStyle = rand() < .5 ? 'rgba(0,0,0,.25)' : 'rgba(200,225,210,.07)'; c.fill();
+  }
+  // a seam where two blocks meet, on the big ones
+  if (big) {
+    c.beginPath(); c.moveTo(x + w * .62, y); c.lineTo(x + w * .58, y + h * .48); c.lineTo(x + w, y + h * .52);
+    c.strokeStyle = 'rgba(0,0,0,.6)'; c.lineWidth = Math.max(1.5, cs * .04); c.stroke();
+    c.strokeStyle = 'rgba(170,200,185,.1)'; c.lineWidth = 1; c.translate(-1, -1); c.stroke(); c.translate(1, 1);
+  }
+  // the carved sign: an eye above three trailing strokes, its grooves faintly lit
+  const gx = x + w * (big ? .34 : .5), gy = y + h * (big ? .36 : .44), gr = cs * (big ? .32 : .22);
+  c.beginPath();
+  c.moveTo(gx - gr, gy); c.quadraticCurveTo(gx, gy - gr * .9, gx + gr, gy); c.quadraticCurveTo(gx, gy + gr * .9, gx - gr, gy);
+  c.moveTo(gx + gr * .22, gy); c.arc(gx, gy, gr * .22, 0, TAU);
+  for (let k = -1; k <= 1; k++) { c.moveTo(gx + k * gr * .45, gy + gr * .6); c.quadraticCurveTo(gx + k * gr * .65, gy + gr * 1.05, gx + k * gr * .4, gy + gr * 1.45); }
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  c.strokeStyle = 'rgba(0,0,0,.6)'; c.lineWidth = Math.max(1.5, cs * .06); c.stroke();
+  c.save(); c.globalCompositeOperation = 'lighter';
+  c.strokeStyle = `rgba(80,220,200,${.14 + .08 * Math.sin(now / 1000 + seed)})`; c.lineWidth = Math.max(1, cs * .022); c.stroke();
+  c.restore();
+  // barnacles crowding the lower edge
+  for (let k = 0; k < (big ? 26 : 10); k++) {
+    const bx = x + w * (.1 + rand() * .8), by = y + h * (.72 + rand() * .26), br = cs * (.025 + rand() * .035);
+    c.beginPath(); c.arc(bx, by, br, 0, TAU); c.fillStyle = 'rgba(190,195,175,.55)'; c.fill();
+    c.beginPath(); c.arc(bx, by - br * .1, br * .45, 0, TAU); c.fillStyle = 'rgba(20,25,22,.85)'; c.fill();
+  }
+  // a weed strand stirring in the current
+  c.beginPath();
+  const wx = x + w * .82, wy = y + h - i;
+  c.moveTo(wx, wy);
+  for (let k = 1; k <= 8; k++) c.lineTo(wx + Math.sin(now / 700 + k * .7 + seed) * cs * .05 * k / 8, wy - k * cs * .06 * (big ? 1.4 : 1));
+  c.strokeStyle = 'rgba(70,120,60,.6)'; c.lineWidth = Math.max(1, cs * .03); c.stroke();
+  c.restore();
+  // chiselled bevel: lit along the top and left, dark along the bottom and right
+  quad(.04);
+  c.strokeStyle = 'rgba(200,225,210,.14)'; c.lineWidth = Math.max(1, cs * .03); c.stroke();
+  quad(); c.strokeStyle = 'rgba(0,0,0,.8)'; c.lineWidth = Math.max(1, cs * .035); c.stroke();
+}
+
+// ---------- the studies ----------
+const DESIGNS = [
+  { name: 'Basalt Columns', tag: 'Hexagonal pillars, from above', draw: drawColumns,
+    text: 'A cluster of hexagonal basalt columns of uneven height, packed into the footprint and wet along their lit edges. It is the same black stone as the Dagon Idol. The 2×2 size simply holds more columns.' },
+  { name: 'Menhir', tag: 'A standing stone', draw: drawMenhir,
+    text: 'A rough standing stone streaked with lichen, with a spiral carved into it and a faint ley glow in the groove. It rises a little above its cell and casts a shadow at its foot, so it feels taller than the stones around it.' },
+  { name: 'Obsidian', tag: 'Faceted volcanic glass', draw: drawObsidian,
+    text: 'A faceted block of black volcanic glass, with each face catching the light differently. Ley-green veins pulse slowly deep inside. It is the sharpest and most alien of the four.' },
+  { name: 'Sunken Masonry', tag: 'Cyclopean stonework', draw: drawMasonry,
+    text: 'A block of R’lyeh’s Cyclopean stonework. Its corners are never quite square, it is crusted with barnacles, and a strand of weed sways in the current. A carved eye sign glows faintly in its grooves. The 2×2 block shows a seam where two stones meet.' },
+];
+
+let layout = 3;
+const bar = document.getElementById('layouts');
+LAYOUTS.forEach((l, n) => {
+  const b = document.createElement('button');
+  b.textContent = l.name;
+  b.addEventListener('click', () => { layout = n; bar.querySelectorAll('button').forEach((x, m) => x.classList.toggle('on', m === n)); });
+  b.classList.toggle('on', n === layout);
+  bar.appendChild(b);
+});
+
+const studies = [];
+const main = document.getElementById('studies');
+for (const d of DESIGNS) {
+  const el = document.createElement('section');
+  el.className = 'study';
+  el.innerHTML = `<h2>${d.name}</h2><div class="tag">${d.tag}</div><canvas class="board"></canvas>
+    <div class="row"><canvas></canvas><p>${d.text}</p></div>`;
+  main.appendChild(el);
+  const board = el.querySelector('.board'), icon = el.querySelector('.row canvas');
+  studies.push({ d, board, ctx: board.getContext('2d'), icon, cs: 0, W: 0, H: 0 });
+}
+
+function resize() {
+  for (const st of studies) {
+    const w = st.board.clientWidth;
+    st.cs = (w - PAD * 2) / COLS;
+    st.W = w; st.H = st.cs * ROWS + PAD * 2;
+    st.board.style.height = st.H + 'px';
+    st.board.width = Math.round(w * dpr); st.board.height = Math.round(st.H * dpr);
+    st.icon.style.width = st.icon.style.height = '96px';
+    st.icon.width = st.icon.height = Math.round(96 * dpr);
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+function frame(now) {
+  const L = LAYOUTS[layout].m, blocked = new Set();
+  for (const [r, col, s] of L) for (let a = 0; a < s; a++) for (let b = 0; b < s; b++) blocked.add((r + a) * COLS + col + b);
+  const order = [...L].sort((a, b) => (a[0] + a[2]) - (b[0] + b[2]));
+  for (const st of studies) {
+    const c = st.ctx, cs = st.cs;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, st.W, st.H);
+    drawBoard(c, cs, st.W, st.H, blocked);
+    for (const [r, col, s] of order) st.d.draw(c, PAD + col * cs, PAD + r * cs, cs * s, cs * s, cs, now, r * 13 + col * 7 + s);
+    const ic = st.icon.getContext('2d');
+    ic.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ic.clearRect(0, 0, 96, 96);
+    st.d.draw(ic, 18, 24, 60, 60, 60, now, 5);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

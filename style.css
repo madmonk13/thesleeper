@@ -255,6 +255,8 @@ button.ghost {
 #intro h2.taint { color: #e6c4ff; text-shadow: 0 0 14px rgba(180, 77, 255, .6); }
 #intro h2.shog { color: #dcdad0; text-shadow: 0 0 14px rgba(157, 187, 52, .45); }
 #intro h2.idol { color: #bff3e6; text-shadow: 0 0 14px rgba(60, 200, 170, .5); }
+#intro h2.mono { color: #dfe6df; text-shadow: 0 0 14px rgba(80, 220, 200, .4); }
+#intro h2.gate { color: #efe2ff; text-shadow: 0 0 14px rgba(190, 140, 255, .55); }
 #intro .tip { margin-top: -6px; font-size: 17px; color: #f3d48a; }
 #intro .tip:empty { display: none; }
 

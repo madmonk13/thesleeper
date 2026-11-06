@@ -1,7 +1,7 @@
 // Offline support. Our own files are network-first, so a refresh always picks up the latest
 // code while online and falls back to the cached copy offline. Fonts rarely change, so they're
 // served from the cache and refreshed in the background.
-const CACHE = 'sleeper-v3';
+const CACHE = 'sleeper-v5';
 const SHELL = [
   './', 'index.html', 'style.css', 'game.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png',
